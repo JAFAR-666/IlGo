@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Communication Coach Agent</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <p class="eyebrow">AI Communication Practice</p>
+        <h1>Train for GDs, public speaking, and presentations.</h1>
+        <p class="hero-copy">
+          Practice like you are working with a personal communication coach.
+          Start a session, respond to a scenario, and get instant structured feedback.
+        </p>
+      </section>
+
+      <section class="panel controls">
+        <div class="panel-header">
+          <h2>Start Session</h2>
+          <p>Pick your format, topic, and level.</p>
+        </div>
+
+        <form id="session-form" class="form-grid">
+          <label>
+            Mode
+            <select name="mode">
+              <option value="gd">Group Discussion</option>
+              <option value="publicSpeaking">Public Speaking</option>
+              <option value="presentations">Presentations</option>
+            </select>
+          </label>
+
+          <label>
+            Learner Level
+            <select name="learnerLevel">
+              <option value="beginner">Beginner</option>
+              <option value="intermediate" selected>Intermediate</option>
+              <option value="advanced">Advanced</option>
+            </select>
+          </label>
+
+          <label>
+            Duration (minutes)
+            <input type="number" name="durationMinutes" min="2" max="20" value="5" />
+          </label>
+
+          <label class="full-width">
+            Topic or scenario
+            <input
+              type="text"
+              name="topic"
+              placeholder="Optional: e.g. Should AI replace traditional classrooms?"
+            />
+          </label>
+
+          <button type="submit">Create Practice Session</button>
+        </form>
+      </section>
+
+      <section class="workspace">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Coach Brief</h2>
+            <p>The agent sets the context and objective for your round.</p>
+          </div>
+          <div id="session-brief" class="empty-state">
+            Start a session to load your practice scenario.
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Your Response</h2>
+            <p>Type how you would speak. This can later become microphone input.</p>
+          </div>
+
+          <form id="response-form" class="response-form">
+            <textarea
+              id="response-text"
+              name="responseText"
+              rows="10"
+              placeholder="Example: First, I believe AI will create new roles because every major technology shift also creates demand for new skills..."
+            ></textarea>
+            <button type="submit">Get Coaching Feedback</button>
+          </form>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Feedback Dashboard</h2>
+          <p>Strengths, gaps, and your next coaching prompt.</p>
+        </div>
+        <div id="feedback-output" class="empty-state">
+          Feedback will appear here after your first response.
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Build Path</h2>
+          <p>How this grows from MVP to full communication agent.</p>
+        </div>
+        <div class="roadmap">
+          <div class="meta-card">
+            <span>Now</span>
+            <strong>AI text coach</strong>
+            <p>Session setup, text practice, structured evaluation, and guided retry prompts.</p>
+          </div>
+          <div class="meta-card">
+            <span>Next</span>
+            <strong>Voice practice</strong>
+            <p>Microphone input, speech-to-text, filler detection, and speaking pace insights.</p>
+          </div>
+          <div class="meta-card">
+            <span>Later</span>
+            <strong>Multi-person simulation</strong>
+            <p>Mock panelists, GD participants, presentation Q and A, and progress tracking.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

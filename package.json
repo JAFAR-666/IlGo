@@ -1,0 +1,24 @@
+{
+  "name": "verbix",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MVP AI communication coach for group discussions, public speaking, and presentation practice.",
+  "scripts": {
+    "start": "node server.js",
+    "dev:server": "node server.js",
+    "dev:client": "vite",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "pg": "^8.16.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "recharts": "^3.2.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.2",
+    "vite": "^7.1.4"
+  }
+}
