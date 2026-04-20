@@ -1,53 +1,75 @@
-# Verbix
+# IlGo
 
-A React + Node app for AI-powered communication practice focused on:
+IlGo is a React + Node marketplace MVP for on-demand home services. It now includes:
 
-- Group discussions (GDs)
-- Public speaking
-- Presentations
+- Customer booking flow
+- Worker dispatch console
+- Smart worker matching by distance, rating, and price
+- Live tracking over server-sent events
+- Payment capture records
+- Postgres-backed auth and marketplace data
 
-Verbix gives you a React frontend, a lightweight Node backend, optional OpenAI-powered coaching, Postgres-backed auth and saved practice history, browser voice practice with speaking analysis, and a realtime AI voice studio.
-This version is prepared for Railway + Postgres deployment, adds analytics charts, and scores live transcript turns during realtime voice sessions.
+## Product shape
 
-## What this MVP does
-
-- Branded landing page and authentication flow
-- Lets a learner pick a practice mode
-- Saves completed practice sessions for logged-in users
-- Generates a guided scenario and coaching objective
-- Accepts typed responses and browser-recorded voice practice
-- Tracks transcript length, speaking pace, and filler-word signals
-- Evaluates the response on clarity, structure, filler-word usage, confidence signals, and actionability
-- Returns feedback, strengths, gaps, and a follow-up coaching prompt
-- Opens a realtime AI voice conversation mode through OpenAI Realtime
-
-## Why this structure
-
-The product is split into two layers:
+The app is structured as a single deployable service:
 
 1. `client/`
-   The React learner experience
-2. `server.js` + `src/coach.js` + `src/openaiCoach.js`
-   The API and coaching engine
+   The responsive customer and worker web UI
+2. `server.js`
+   The Node HTTP server and API routes
+3. `src/db.js` + `src/ilgoStore.js`
+   Postgres schema, seeded services/workers, matching logic, bookings, payments, and tracking updates
 
-That separation makes it easy to upgrade the coaching engine later to use:
+## Main user flows
 
-- OpenAI Realtime for mock interviews / speaking drills
-- Speech-to-text for live speaking practice
-- Text-to-speech for panel simulation
-- Session memory and learner progress tracking
+### Customer
 
-## Run locally
+- Register or log in
+- Choose a service
+- Set location coordinates
+- Review ranked nearby workers
+- Confirm the booking
+- Watch the worker move live
+- Pay after arrival or completion
+
+### Worker
+
+- Select a seeded worker profile
+- Toggle availability
+- View assigned jobs
+- Accept a request
+- Move closer to the customer
+- Mark arrived and completed
+
+## Local setup
+
+Create environment variables:
+
+```bash
+DATABASE_URL=postgresql://user:password@host:5432/ilgo
+AUTH_SECRET=replace_with_a_long_random_secret
+PORT=3000
+```
+
+Optional OpenAI variables can stay unset for this MVP:
+
+```bash
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5-mini
+OPENAI_REALTIME_MODEL=gpt-realtime
+```
+
+Install and run:
 
 ```bash
 npm install
 npm run build
-node server.js
+npm start
 ```
 
-Then open [http://localhost:3000](http://localhost:3000)
+Open [http://localhost:3000](http://localhost:3000)
 
-## Run in development
+## Development mode
 
 Use two terminals:
 
@@ -59,97 +81,81 @@ npm run dev:server
 npm run dev:client
 ```
 
-Then open [http://localhost:5173](http://localhost:5173)
+Open [http://localhost:5173](http://localhost:5173)
 
-## Enable OpenAI evaluation
+## API overview
 
-This app now supports two evaluation modes:
+### Auth
 
-- `heuristic`
-  default fallback with no API key needed
-- `openai`
-  model-based coaching via the OpenAI Responses API
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `GET /api/auth/me`
 
-Create a `.env`-style environment in your shell before starting the server:
+### Marketplace
 
-```bash
-$env:OPENAI_API_KEY="your_key_here"
-$env:OPENAI_MODEL="gpt-5-mini"
-node server.js
-```
+- `GET /api/ilgo/bootstrap`
+- `GET /api/ilgo/workers?service=...&latitude=...&longitude=...`
+- `POST /api/ilgo/bookings`
+- `GET /api/ilgo/bookings`
+- `GET /api/ilgo/bookings/:id`
+- `POST /api/ilgo/bookings/:id/status`
+- `POST /api/ilgo/bookings/:id/pay`
+- `GET /api/ilgo/track/:bookingId`
 
-If `OPENAI_API_KEY` is not set, the app stays fully usable and falls back to the built-in evaluator.
+### Worker console
 
-## Realtime voice mode
+- `GET /api/ilgo/workers/:workerId/jobs`
+- `POST /api/ilgo/workers/:workerId/availability`
+- `POST /api/ilgo/workers/:workerId/location`
 
-Verbix also includes a Voice Studio that connects the browser to OpenAI Realtime through your server.
+## Smart matching
 
-- It requires `OPENAI_API_KEY`
-- It uses the `OPENAI_REALTIME_MODEL` environment variable when set
-- Live transcript turns are scored through the same coaching engine and saved into analytics history
-- Browser support depends on microphone and WebRTC availability
+Workers are ranked using a weighted score that blends:
 
-## Database
+- Distance from the customer
+- Worker rating
+- Worker hourly price
 
-Verbix stores users, auth sessions, practice sessions, and practice turns in Postgres.
+Lower score wins the dispatch.
 
-- `DATABASE_URL` is required
-- Railway Postgres provides `DATABASE_URL` automatically
-- Auth uses opaque session tokens stored as hashed database sessions with expiry
-- The app runs startup schema creation automatically
+## Live tracking
+
+Tracking uses server-sent events at `GET /api/ilgo/track/:bookingId`.
+
+- Customer screens subscribe to one booking channel
+- Worker actions update booking status and coordinates
+- Location/status/payment changes are pushed to the browser immediately
+
+This keeps the stack dependency-light while still giving near real-time behavior.
+
+## Google Maps upgrade path
+
+The current UI uses a provider-neutral tracking board so the app works without external keys. To upgrade to Google Maps:
+
+1. Add a browser Maps component in the client
+2. Store `VITE_GOOGLE_MAPS_API_KEY`
+3. Feed `customerLatitude`, `customerLongitude`, `workerLatitude`, and `workerLongitude` into map markers
+4. Subscribe to `/api/ilgo/track/:bookingId` and update those markers live
 
 ## Railway deployment
 
-Recommended production target: Railway with a Postgres service attached.
+Recommended path:
 
-1. Push this project to GitHub
-2. Create a new Railway project from the repo
-3. Add a PostgreSQL service
-4. Ensure these env vars are set:
-   - `DATABASE_URL`
-   - `AUTH_SECRET`
-   - `OPENAI_API_KEY`
-   - `OPENAI_MODEL`
-   - `OPENAI_REALTIME_MODEL`
-5. Railway will run `npm start`
-6. Health check path: `/api/health`
+1. Push the repo to GitHub
+2. Create a Railway project
+3. Attach a PostgreSQL service
+4. Add `DATABASE_URL` and `AUTH_SECRET`
+5. Deploy with `npm start`
+6. Set health check to `/api/health`
 
-## OpenAI integration notes
+`railway.json` is already configured for the start command and health check.
 
-The server calls `POST https://api.openai.com/v1/responses` and requests structured JSON output for:
+## Render deployment
 
-- category scores
-- strengths
-- improvement areas
-- summary feedback
-- next-round coaching prompt
+1. Create a new Web Service from the repo
+2. Provision a Postgres database
+3. Set `DATABASE_URL` and `AUTH_SECRET`
+4. Build command: `npm install && npm run build`
+5. Start command: `npm start`
 
-This follows OpenAI's current recommendation to use the Responses API for new text-generation projects and uses a structured JSON schema for reliable parsing.
-
-## Suggested next upgrades
-
-- Add role-play personas for GD moderators, interviewers, or presentation audiences
-- Persist learner history and track improvement trends
-- Add rubric customization by target use case:
-  - placement GD
-  - executive communication
-  - classroom presentations
-  - sales pitches
-- Add realtime voice coaching with OpenAI Realtime
-- Add answer rewrites, exemplar responses, and rubric-specific scoring
-
-## Core product idea
-
-The agent should behave like a supportive communication trainer:
-
-- before practice: set context, goal, and rubric
-- during practice: prompt, challenge, and guide
-- after practice: diagnose issues and prescribe drills
-
-## Current limitations
-
-- Browser speech recognition availability varies by browser
-- Authentication and history use simple local JSON files, not a production database
-- OpenAI coaching requires an API key and internet access
-- Realtime voice also depends on available OpenAI quota
-- Sessions are in-memory only
+If you place Render behind a proxy, keep streaming responses enabled for the tracking endpoint.

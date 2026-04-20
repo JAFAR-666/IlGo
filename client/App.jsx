@@ -1,14 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { getVoiceSupport, startVoiceCapture, stopVoiceCapture } from "./voice";
-import { createRealtimeCoach, getRealtimeSupport } from "./realtimeVoice";
-import AnalyticsPanel from "./AnalyticsPanel";
-
-const initialForm = {
-  mode: "gd",
-  learnerLevel: "intermediate",
-  durationMinutes: 5,
-  topic: "",
-};
+import { useEffect, useState } from "react";
 
 const initialAuth = {
   name: "",
@@ -16,47 +6,47 @@ const initialAuth = {
   password: "",
 };
 
-const tokenStorageKey = "verbix_auth_token";
+const initialBookingForm = {
+  serviceSlug: "",
+  latitude: "16.6115",
+  longitude: "82.1182",
+  note: "",
+};
+
+const tokenStorageKey = "ilgo_auth_token";
 
 export default function App() {
-  const [form, setForm] = useState(initialForm);
   const [config, setConfig] = useState(null);
+  const [catalog, setCatalog] = useState({ services: [], workers: [] });
+  const [workerPreview, setWorkerPreview] = useState([]);
   const [authMode, setAuthMode] = useState("login");
   const [authForm, setAuthForm] = useState(initialAuth);
   const [token, setToken] = useState(() => localStorage.getItem(tokenStorageKey) || "");
   const [user, setUser] = useState(null);
-  const [historyItems, setHistoryItems] = useState([]);
-  const [analytics, setAnalytics] = useState(null);
-  const [view, setView] = useState("practice");
-  const [responseText, setResponseText] = useState("");
-  const [session, setSession] = useState(null);
-  const [feedback, setFeedback] = useState(null);
-  const [error, setError] = useState("");
+  const [view, setView] = useState("customer");
+  const [bookingForm, setBookingForm] = useState(initialBookingForm);
+  const [bookings, setBookings] = useState([]);
+  const [activeBooking, setActiveBooking] = useState(null);
+  const [selectedWorkerId, setSelectedWorkerId] = useState("");
+  const [workerJobs, setWorkerJobs] = useState([]);
   const [busy, setBusy] = useState(false);
-  const [voiceState, setVoiceState] = useState({
-    status: "idle",
-    transcript: "",
-    interimTranscript: "",
-    durationSeconds: 0,
-    audioUrl: "",
-    error: "",
-  });
-  const [realtimeState, setRealtimeState] = useState({
-    status: "idle",
-    model: "",
-    error: "",
-    messages: [],
-  });
-
-  const voiceSupport = useMemo(() => getVoiceSupport(), []);
-  const realtimeSupport = useMemo(() => getRealtimeSupport(), []);
-  const voiceSessionRef = useRef(null);
-  const timerRef = useRef(null);
-  const realtimeSessionRef = useRef(null);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     fetchJson("/api/app-config")
       .then(setConfig)
+      .catch((requestError) => setError(requestError.message));
+
+    fetchJson("/api/ilgo/bootstrap")
+      .then((data) => {
+        setCatalog({ services: data.services || [], workers: data.workers || [] });
+        setWorkerPreview(data.workers || []);
+        setSelectedWorkerId((data.workers || [])[0]?.id || "");
+        setBookingForm((current) => ({
+          ...current,
+          serviceSlug: current.serviceSlug || (data.services || [])[0]?.slug || "",
+        }));
+      })
       .catch((requestError) => setError(requestError.message));
   }, []);
 
@@ -64,7 +54,8 @@ export default function App() {
     if (!token) {
       localStorage.removeItem(tokenStorageKey);
       setUser(null);
-      setHistoryItems([]);
+      setBookings([]);
+      setActiveBooking(null);
       return;
     }
 
@@ -72,9 +63,9 @@ export default function App() {
     fetchJson("/api/auth/me", {
       headers: authHeaders(token),
     })
-      .then((data) => {
+      .then(async (data) => {
         setUser(data.user);
-        return loadHistory(token);
+        await loadBookings(token);
       })
       .catch(() => {
         localStorage.removeItem(tokenStorageKey);
@@ -83,180 +74,48 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
+    const latitude = Number(bookingForm.latitude);
+    const longitude = Number(bookingForm.longitude);
+
+    if (!bookingForm.serviceSlug || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return;
+    }
+
+    fetchJson(`/api/ilgo/workers?service=${encodeURIComponent(bookingForm.serviceSlug)}&latitude=${latitude}&longitude=${longitude}`)
+      .then((data) => setWorkerPreview(data.items || []))
+      .catch((requestError) => setError(requestError.message));
+  }, [bookingForm.latitude, bookingForm.longitude, bookingForm.serviceSlug]);
+
+  useEffect(() => {
+    if (!selectedWorkerId) {
+      return;
+    }
+
+    loadWorkerJobs(selectedWorkerId);
+  }, [selectedWorkerId]);
+
+  useEffect(() => {
+    if (!activeBooking?.id) {
+      return undefined;
+    }
+
+    const events = new EventSource(`/api/ilgo/track/${activeBooking.id}`);
+    events.onmessage = (event) => {
+      const payload = JSON.parse(event.data);
+      const nextBooking = payload.booking;
+
+      if (!nextBooking) {
+        return;
       }
 
-      if (voiceSessionRef.current) {
-        stopVoiceCapture(voiceSessionRef.current);
-      }
-
-      if (realtimeSessionRef.current) {
-        realtimeSessionRef.current.stop();
-      }
+      setActiveBooking(nextBooking);
+      setBookings((current) => mergeBooking(current, nextBooking));
+      setWorkerJobs((current) => mergeBooking(current, nextBooking));
     };
-  }, []);
+    events.onerror = () => events.close();
 
-  async function startSession(event) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-
-    try {
-      const nextSession = await fetchJson("/api/session/start", {
-        method: "POST",
-        headers: authHeaders(token),
-        body: JSON.stringify({
-          ...form,
-          durationMinutes: Number(form.durationMinutes),
-        }),
-      });
-      setSession(nextSession);
-      setFeedback(null);
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitResponse(event) {
-    event.preventDefault();
-
-    if (!session) {
-      setError("Create a session first so the coach knows what you are practicing.");
-      return;
-    }
-
-    if (!responseText.trim()) {
-      setError("Add a practice response or record your voice before asking for feedback.");
-      return;
-    }
-
-    setBusy(true);
-    setError("");
-
-    try {
-      const result = await fetchJson("/api/session/respond", {
-        method: "POST",
-        headers: authHeaders(token),
-        body: JSON.stringify({
-          sessionId: session.id,
-          responseText,
-        }),
-      });
-      setSession(result.session);
-      setFeedback(result.turn);
-      await loadHistory();
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleStartRecording() {
-    setError("");
-    setVoiceState({
-      status: "requesting",
-      transcript: "",
-      interimTranscript: "",
-      durationSeconds: 0,
-      audioUrl: "",
-      error: "",
-    });
-
-    try {
-      const capture = await startVoiceCapture({
-        onTranscript(text) {
-          setVoiceState((current) => ({ ...current, transcript: text }));
-        },
-        onInterimTranscript(text) {
-          setVoiceState((current) => ({ ...current, interimTranscript: text }));
-        },
-        onAudioReady(audioUrl) {
-          setVoiceState((current) => ({ ...current, audioUrl }));
-        },
-        onError(message) {
-          setVoiceState((current) => ({
-            ...current,
-            status: "error",
-            error: message,
-          }));
-        },
-      });
-
-      voiceSessionRef.current = capture;
-      setVoiceState((current) => ({
-        ...current,
-        status: "recording",
-      }));
-
-      timerRef.current = setInterval(() => {
-        setVoiceState((current) => ({
-          ...current,
-          durationSeconds: Number((current.durationSeconds + 1).toFixed(0)),
-        }));
-      }, 1000);
-    } catch (captureError) {
-      setVoiceState((current) => ({
-        ...current,
-        status: "error",
-        error: captureError.message,
-      }));
-    }
-  }
-
-  async function handleStopRecording() {
-    if (!voiceSessionRef.current) {
-      return;
-    }
-
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-
-    const stopped = await stopVoiceCapture(voiceSessionRef.current);
-    voiceSessionRef.current = null;
-
-    const mergedTranscript = [stopped.transcript, stopped.interimTranscript]
-      .filter(Boolean)
-      .join(" ")
-      .trim();
-
-    setVoiceState((current) => ({
-      ...current,
-      status: "stopped",
-      transcript: mergedTranscript || current.transcript,
-      interimTranscript: "",
-      audioUrl: stopped.audioUrl || current.audioUrl,
-    }));
-
-    if (mergedTranscript) {
-      setResponseText(mergedTranscript);
-    }
-  }
-
-  const voiceMetrics = useMemo(() => {
-    return calculateVoiceMetrics(voiceState.transcript || responseText, voiceState.durationSeconds);
-  }, [responseText, voiceState.durationSeconds, voiceState.transcript]);
-
-  async function loadHistory(activeToken = token) {
-    if (!activeToken) {
-      return;
-    }
-
-    const data = await fetchJson("/api/history", {
-      headers: authHeaders(activeToken),
-    });
-    setHistoryItems(data.items || []);
-    const analyticsData = await fetchJson("/api/analytics", {
-      headers: authHeaders(activeToken),
-    });
-    setAnalytics(analyticsData);
-  }
+    return () => events.close();
+  }, [activeBooking?.id]);
 
   async function handleAuthSubmit(event) {
     event.preventDefault();
@@ -284,323 +143,247 @@ export default function App() {
     }
   }
 
-  async function handleStartRealtime() {
-    setRealtimeState({
-      status: "connecting",
-      model: "",
-      error: "",
-      messages: [],
+  async function loadBookings(activeToken = token) {
+    if (!activeToken) {
+      return;
+    }
+
+    const data = await fetchJson("/api/ilgo/bookings", {
+      headers: authHeaders(activeToken),
     });
+    setBookings(data.items || []);
+    setActiveBooking((current) => {
+      if (!current) {
+        return data.items?.[0] || null;
+      }
+      return data.items?.find((item) => item.id === current.id) || current;
+    });
+  }
+
+  async function loadWorkerJobs(workerId) {
+    const data = await fetchJson(`/api/ilgo/workers/${workerId}/jobs`);
+    setWorkerJobs(data.items || []);
+  }
+
+  async function handleCreateBooking(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
 
     try {
-      realtimeSessionRef.current = await createRealtimeCoach({
-        token,
-        mode: form.mode,
-        topic: form.topic,
-        learnerLevel: form.learnerLevel,
-        userName: user?.name,
-        onStatus(status) {
-          setRealtimeState((current) => ({ ...current, status }));
-        },
-        onMessage(message) {
-          setRealtimeState((current) => ({
-            ...current,
-            messages: [...current.messages, message],
-          }));
-        },
-        async onTranscriptComplete(text, sessionId) {
-          const score = await fetchJson("/api/realtime/score", {
-            method: "POST",
-            headers: authHeaders(token),
-            body: JSON.stringify({
-              sessionId,
-              responseText: text,
-            }),
-          });
-
-          setRealtimeState((current) => ({
-            ...current,
-            messages: [
-              ...current.messages,
-              {
-                role: "score",
-                text: `${score.score.overall}/100 overall. ${score.feedback.summary}`,
-              },
-            ],
-          }));
-
-          await loadHistory();
-        },
-        onError(message) {
-          setRealtimeState((current) => ({
-            ...current,
-            status: "error",
-            error: message,
-          }));
-        },
+      const bookingResponse = await fetchJson("/api/ilgo/bookings", {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({
+          ...bookingForm,
+          latitude: Number(bookingForm.latitude),
+          longitude: Number(bookingForm.longitude),
+        }),
       });
 
-      setRealtimeState((current) => ({
-        ...current,
-        status: "live",
-        model: realtimeSessionRef.current.model || "",
-      }));
+      setBookings((current) => [bookingResponse.booking, ...current.filter((item) => item.id !== bookingResponse.booking.id)]);
+      setActiveBooking(bookingResponse.booking);
+      setView("customer");
+      await loadWorkerJobs(bookingResponse.booking.workerId);
     } catch (requestError) {
-      setRealtimeState((current) => ({
-        ...current,
-        status: "error",
-        error: requestError.message,
-      }));
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
     }
   }
 
-  function handleStopRealtime() {
-    realtimeSessionRef.current?.stop();
-    realtimeSessionRef.current = null;
-    setRealtimeState((current) => ({ ...current, status: "stopped" }));
+  async function handlePayBooking() {
+    if (!activeBooking) {
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+
+    try {
+      const result = await fetchJson(`/api/ilgo/bookings/${activeBooking.id}/pay`, {
+        method: "POST",
+        body: JSON.stringify({
+          amount: activeBooking.priceEstimate,
+          tip: Math.round(activeBooking.priceEstimate * 0.08),
+        }),
+      });
+      setActiveBooking(result.booking);
+      setBookings((current) => mergeBooking(current, result.booking));
+      await loadWorkerJobs(result.booking.workerId);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleWorkerAvailability(nextAvailability) {
+    if (!selectedWorkerId) {
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      const result = await fetchJson(`/api/ilgo/workers/${selectedWorkerId}/availability`, {
+        method: "POST",
+        body: JSON.stringify({ isAvailable: nextAvailability }),
+      });
+
+      setCatalog((current) => ({
+        ...current,
+        workers: current.workers.map((worker) => (worker.id === result.worker.id ? result.worker : worker)),
+      }));
+      setWorkerPreview((current) => current.map((worker) => (worker.id === result.worker.id ? result.worker : worker)));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleWorkerStatus(job, status) {
+    setBusy(true);
+
+    try {
+      const result = await fetchJson(`/api/ilgo/bookings/${job.id}/status`, {
+        method: "POST",
+        body: JSON.stringify({
+          workerId: selectedWorkerId,
+          status,
+        }),
+      });
+
+      setWorkerJobs((current) => mergeBooking(current, result.booking));
+      setBookings((current) => mergeBooking(current, result.booking));
+      if (activeBooking?.id === result.booking.id) {
+        setActiveBooking(result.booking);
+      }
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleMoveWorker(job) {
+    const nextPoint = moveToward(job.workerLatitude, job.workerLongitude, job.customerLatitude, job.customerLongitude, 0.35);
+
+    setBusy(true);
+
+    try {
+      const result = await fetchJson(`/api/ilgo/workers/${selectedWorkerId}/location`, {
+        method: "POST",
+        body: JSON.stringify({
+          bookingId: job.id,
+          latitude: nextPoint.latitude,
+          longitude: nextPoint.longitude,
+        }),
+      });
+
+      if (result.booking) {
+        setWorkerJobs((current) => mergeBooking(current, result.booking));
+        setBookings((current) => mergeBooking(current, result.booking));
+        if (activeBooking?.id === result.booking.id) {
+          setActiveBooking(result.booking);
+        }
+      }
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   function handleLogout() {
     localStorage.removeItem(tokenStorageKey);
     setToken("");
     setUser(null);
-    setHistoryItems([]);
-    setAnalytics(null);
-    setSession(null);
-    setFeedback(null);
-    setResponseText("");
-    setView("practice");
+    setBookings([]);
+    setActiveBooking(null);
   }
 
+  const selectedWorker = catalog.workers.find((worker) => worker.id === selectedWorkerId) || null;
+
   return (
-    <main className="verbix-shell">
+    <main className="ilgo-shell">
       <header className="topbar">
         <div>
-          <p className="brand-mark">Verbix</p>
-          <p className="brand-subtitle">Communication training for the way people really speak</p>
+          <p className="brand-mark">IlGo</p>
+          <p className="brand-subtitle">{config?.productTagline || "Instant home services with live worker tracking"}</p>
         </div>
         {user ? (
           <div className="topbar-actions">
-            <button type="button" className={view === "practice" ? "nav-chip active" : "nav-chip"} onClick={() => setView("practice")}>Practice</button>
-            <button type="button" className={view === "history" ? "nav-chip active" : "nav-chip"} onClick={() => setView("history")}>History</button>
-            <button type="button" className={view === "voice" ? "nav-chip active" : "nav-chip"} onClick={() => setView("voice")}>Voice Studio</button>
+            <button type="button" className={view === "customer" ? "nav-chip active" : "nav-chip"} onClick={() => setView("customer")}>Customer</button>
+            <button type="button" className={view === "worker" ? "nav-chip active" : "nav-chip"} onClick={() => setView("worker")}>Worker Hub</button>
+            <button type="button" className={view === "deploy" ? "nav-chip active" : "nav-chip"} onClick={() => setView("deploy")}>Deploy</button>
             <button type="button" className="ghost-button" onClick={handleLogout}>Logout</button>
           </div>
         ) : null}
       </header>
 
-      {!user ? <Landing authForm={authForm} authMode={authMode} busy={busy} error={error} onAuthModeChange={setAuthMode} onAuthFormChange={setAuthForm} onSubmit={handleAuthSubmit} /> : null}
-
-      {user ? (
+      {!user ? (
+        <Landing
+          authForm={authForm}
+          authMode={authMode}
+          busy={busy}
+          error={error}
+          onAuthModeChange={setAuthMode}
+          onAuthFormChange={setAuthForm}
+          onSubmit={handleAuthSubmit}
+        />
+      ) : (
         <>
           <section className="hero-banner panel">
             <div>
-              <p className="eyebrow">Welcome back</p>
-              <h2>{user.name}, your Verbix studio is ready.</h2>
-              <p className="hero-copy">Create a practice round, review saved sessions, or switch into Voice Studio for a live AI conversation.</p>
+              <p className="eyebrow">Service marketplace MVP</p>
+              <h1>{user.name}, IlGo is ready to dispatch.</h1>
+              <p className="hero-copy">
+                Book an expert, watch the worker move in real time, and use the worker console to simulate the full job lifecycle before deployment.
+              </p>
             </div>
             <div className="roadmap">
-              <MetricCard title="Saved Sessions" score={historyItems.length} description="Persisted practice history" />
-              <MetricCard title="Evaluation" score={config?.evaluationEngine || "loading"} description="Current scoring engine" />
-              <MetricCard title="Realtime" score={config?.realtimeAvailable ? "ready" : "setup needed"} description="Voice Studio availability" />
+              <MetricCard title="Services" score={catalog.services.length} description="Bookable categories" />
+              <MetricCard title="Workers" score={catalog.workers.length} description="Seeded nearby pros" />
+              <MetricCard title="Bookings" score={bookings.length} description="Customer history" />
             </div>
           </section>
 
           {error ? <p className="error-banner">{error}</p> : null}
 
-          {view === "practice" ? (
-            <>
-              <section className="panel controls">
-                <div className="panel-header">
-                  <h2>Create Session</h2>
-                  <p>Pick your format, difficulty, and topic before each round.</p>
-                </div>
-
-                <form className="form-grid" onSubmit={startSession}>
-                  <label>
-                    Mode
-                    <select value={form.mode} onChange={(event) => updateForm(setForm, "mode", event.target.value)}>
-                      <option value="gd">Group Discussion</option>
-                      <option value="publicSpeaking">Public Speaking</option>
-                      <option value="presentations">Presentations</option>
-                    </select>
-                  </label>
-                  <label>
-                    Learner Level
-                    <select value={form.learnerLevel} onChange={(event) => updateForm(setForm, "learnerLevel", event.target.value)}>
-                      <option value="beginner">Beginner</option>
-                      <option value="intermediate">Intermediate</option>
-                      <option value="advanced">Advanced</option>
-                    </select>
-                  </label>
-                  <label>
-                    Duration (minutes)
-                    <input type="number" min="2" max="20" value={form.durationMinutes} onChange={(event) => updateForm(setForm, "durationMinutes", event.target.value)} />
-                  </label>
-                  <label className="full-width">
-                    Topic or scenario
-                    <input type="text" value={form.topic} placeholder="Placement GD, team presentation, leadership communication..." onChange={(event) => updateForm(setForm, "topic", event.target.value)} />
-                  </label>
-                  <button type="submit" disabled={busy}>{busy ? "Working..." : "Create Verbix Session"}</button>
-                </form>
-              </section>
-
-              <section className="workspace">
-                <article className="panel">
-                  <div className="panel-header">
-                    <h2>Coach Brief</h2>
-                    <p>The agent sets the scenario, goal, and current coaching prompt.</p>
-                  </div>
-                  {session ? <SessionBrief session={session} /> : <EmptyState text="Start a session to load your practice scenario." />}
-                </article>
-
-                <article className="panel">
-                  <div className="panel-header">
-                    <h2>Your Response</h2>
-                    <p>Type a reply, or record yourself and let Verbix draft the transcript.</p>
-                  </div>
-
-                  <form className="response-form" onSubmit={submitResponse}>
-                    <textarea rows="11" value={responseText} placeholder="Speak or type your response here..." onChange={(event) => setResponseText(event.target.value)} />
-
-                    <div className="voice-controls">
-                      <button type="button" className="secondary-button" onClick={handleStartRecording} disabled={voiceState.status === "recording" || !voiceSupport.microphone}>Start Voice Practice</button>
-                      <button type="button" className="secondary-button" onClick={handleStopRecording} disabled={voiceState.status !== "recording"}>Stop Recording</button>
-                    </div>
-
-                    <VoicePanel voiceSupport={voiceSupport} voiceState={voiceState} voiceMetrics={voiceMetrics} />
-
-                    <button type="submit" disabled={busy}>{busy ? "Scoring..." : "Get Verbix Feedback"}</button>
-                  </form>
-                </article>
-              </section>
-
-              <section className="panel">
-                <div className="panel-header">
-                  <h2>Feedback Dashboard</h2>
-                  <p>Review performance, then iterate with the next round prompt.</p>
-                </div>
-                {feedback ? <FeedbackPanel turn={feedback} /> : <EmptyState text="Feedback will appear here after your first response." />}
-              </section>
-            </>
+          {view === "customer" ? (
+            <CustomerDashboard
+              activeBooking={activeBooking}
+              bookingForm={bookingForm}
+              bookings={bookings}
+              busy={busy}
+              services={catalog.services}
+              workerPreview={workerPreview}
+              onBookingFormChange={setBookingForm}
+              onCreateBooking={handleCreateBooking}
+              onPayBooking={handlePayBooking}
+              onSelectBooking={setActiveBooking}
+            />
           ) : null}
 
-          {view === "history" ? <HistorySection historyItems={historyItems} analytics={analytics} /> : null}
+          {view === "worker" ? (
+            <WorkerHub
+              busy={busy}
+              jobs={workerJobs}
+              selectedWorker={selectedWorker}
+              workers={catalog.workers}
+              onMoveWorker={handleMoveWorker}
+              onSelectWorker={setSelectedWorkerId}
+              onToggleAvailability={handleWorkerAvailability}
+              onUpdateStatus={handleWorkerStatus}
+            />
+          ) : null}
 
-          {view === "voice" ? <VoiceStudio realtimeState={realtimeState} realtimeSupport={realtimeSupport} realtimeAvailable={Boolean(config?.realtimeAvailable)} onStart={handleStartRealtime} onStop={handleStopRealtime} /> : null}
+          {view === "deploy" ? <DeployGuide /> : null}
         </>
-      ) : null}
+      )}
     </main>
-  );
-}
-
-function SessionBrief({ session }) {
-  return (
-    <div className="brief-block">
-      <div className="brief-meta">
-        <MetaCard label="Mode" value={session.modeLabel} />
-        <MetaCard label="Level" value={session.learnerLevel} />
-        <MetaCard label="Goal" value={session.goal} />
-        <MetaCard label="Engine" value={session.evaluationEngine || "heuristic"} />
-      </div>
-      <div>
-        <h3>Scenario</h3>
-        <p>{session.topic}</p>
-      </div>
-      <div className="coach-prompt">
-        <strong>Coach prompt</strong>
-        <p>{session.coachPrompt}</p>
-      </div>
-    </div>
-  );
-}
-
-function FeedbackPanel({ turn }) {
-  const { analysis, feedback } = turn;
-
-  return (
-    <div className="feedback-grid">
-      {turn.warning ? <p className="inline-note">Fallback used: {turn.warning}</p> : null}
-      <div className="metrics-grid">
-        <MetricCard title="Overall" score={`${analysis.scores.overall}/100`} description="Composite coaching score" />
-        <MetricCard title="Clarity" score={`${analysis.scores.clarity}/100`} description="How understandable the message feels" />
-        <MetricCard title="Structure" score={`${analysis.scores.structure}/100`} description="How easy the sequence is to follow" />
-        <MetricCard title="Confidence" score={`${analysis.scores.confidence}/100`} description="How assertive and steady the delivery sounds" />
-        <MetricCard title="Relevance" score={`${analysis.scores.relevance}/100`} description="How directly the answer serves the scenario" />
-        <MetricCard title="Conciseness" score={`${analysis.scores.conciseness}/100`} description="How focused and efficient the answer is" />
-      </div>
-
-      <div className="feedback-section">
-        <h3>Coach summary</h3>
-        <p>{feedback.summary}</p>
-      </div>
-
-      <div className="feedback-section">
-        <h3>Strengths</h3>
-        <ul>
-          {feedback.strengths.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="feedback-section">
-        <h3>Improvements</h3>
-        <ul>
-          {feedback.improvements.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="coach-prompt">
-        <strong>Next round prompt</strong>
-        <p>{feedback.followUpPrompt}</p>
-      </div>
-
-      <div className="feedback-section">
-        <h3>Scored by</h3>
-        <p>{turn.engine || "heuristic"}</p>
-      </div>
-    </div>
-  );
-}
-
-function VoicePanel({ voiceSupport, voiceState, voiceMetrics }) {
-  return (
-    <div className="voice-panel">
-      <div className="panel-header compact">
-        <h3>Voice Practice</h3>
-        <p>Browser support varies. Speech recognition is optional and falls back gracefully.</p>
-      </div>
-
-      <div className="metrics-grid">
-        <MetaCard label="Mic" value={voiceSupport.microphone ? "supported" : "missing"} />
-        <MetaCard label="Speech to text" value={voiceSupport.recognition ? "available" : "limited"} />
-        <MetaCard label="Duration" value={`${voiceState.durationSeconds}s`} />
-      </div>
-
-      <div className="metrics-grid">
-        <MetricCard title="Words" score={voiceMetrics.wordCount} description="Transcript length" />
-        <MetricCard title="Pace" score={voiceMetrics.wordsPerMinute} description="Words per minute" />
-        <MetricCard title="Fillers" score={voiceMetrics.fillerCount} description="Detected filler words" />
-        <MetricCard title="Fluency" score={`${voiceMetrics.fluencyScore}/100`} description="Heuristic speaking quality" />
-      </div>
-
-      <div className="voice-status">
-        <strong>Status:</strong> {voiceState.status}
-      </div>
-
-      {voiceState.error ? <p className="inline-note">Voice error: {voiceState.error}</p> : null}
-      {voiceState.interimTranscript ? <p className="inline-note">Listening: {voiceState.interimTranscript}</p> : null}
-      {voiceState.transcript ? <p className="voice-transcript">{voiceState.transcript}</p> : null}
-
-      {voiceState.audioUrl ? (
-        <audio controls src={voiceState.audioUrl} className="audio-preview">
-          Your browser does not support audio playback.
-        </audio>
-      ) : null}
-    </div>
   );
 }
 
@@ -609,15 +392,15 @@ function Landing({ authForm, authMode, busy, error, onAuthModeChange, onAuthForm
     <>
       <section className="landing-hero">
         <div className="hero-copy-block">
-          <p className="eyebrow">Realtime speaking practice</p>
-          <h1>Verbix helps learners practice GDs, public speaking, and presentations with an AI coach.</h1>
+          <p className="eyebrow">Real product direction</p>
+          <h1>IlGo connects households with trusted local pros and shows every move live.</h1>
           <p className="hero-copy">
-            Sign in to save practice history, review coaching trends, and open Voice Studio for live AI conversations.
+            This web MVP mirrors the customer and worker app flow: discovery, matching, booking, tracking, payment, and deployment preparation.
           </p>
           <div className="hero-pills">
-            <span>AI voice coach</span>
-            <span>Saved session history</span>
-            <span>Presentation and GD training</span>
+            <span>Customer booking journey</span>
+            <span>Worker dispatch console</span>
+            <span>Live tracking stream</span>
           </div>
         </div>
 
@@ -627,81 +410,290 @@ function Landing({ authForm, authMode, busy, error, onAuthModeChange, onAuthForm
             <button type="button" className={authMode === "register" ? "nav-chip active" : "nav-chip"} onClick={() => onAuthModeChange("register")}>Create account</button>
           </div>
           <form className="response-form" onSubmit={onSubmit}>
-            {authMode === "register" ? <label>Name<input type="text" value={authForm.name} onChange={(event) => updateForm(onAuthFormChange, "name", event.target.value)} /></label> : null}
-            <label>Email<input type="email" value={authForm.email} onChange={(event) => updateForm(onAuthFormChange, "email", event.target.value)} /></label>
-            <label>Password<input type="password" value={authForm.password} onChange={(event) => updateForm(onAuthFormChange, "password", event.target.value)} /></label>
+            {authMode === "register" ? (
+              <label>
+                Name
+                <input type="text" value={authForm.name} onChange={(event) => updateForm(onAuthFormChange, "name", event.target.value)} />
+              </label>
+            ) : null}
+            <label>
+              Email
+              <input type="email" value={authForm.email} onChange={(event) => updateForm(onAuthFormChange, "email", event.target.value)} />
+            </label>
+            <label>
+              Password
+              <input type="password" value={authForm.password} onChange={(event) => updateForm(onAuthFormChange, "password", event.target.value)} />
+            </label>
             {error ? <p className="error-banner">{error}</p> : null}
-            <button type="submit" disabled={busy}>{busy ? "Working..." : authMode === "login" ? "Enter Verbix" : "Start with Verbix"}</button>
+            <button type="submit" disabled={busy}>{busy ? "Working..." : authMode === "login" ? "Enter IlGo" : "Launch IlGo account"}</button>
           </form>
         </div>
       </section>
 
       <section className="feature-grid">
-        <div className="panel info-panel"><h3>Practice like a real session</h3><p>Switch between GDs, public speaking, and presentations with custom topics and learner levels.</p></div>
-        <div className="panel info-panel"><h3>Track progress</h3><p>Saved history lets learners review previous attempts, scores, and coach summaries.</p></div>
-        <div className="panel info-panel"><h3>Talk to the coach</h3><p>Voice Studio opens a natural realtime AI conversation for speaking practice.</p></div>
+        <div className="panel info-panel"><h3>Customer app flow</h3><p>Choose a service, see nearby workers ranked by distance, rating, and price, then confirm a job.</p></div>
+        <div className="panel info-panel"><h3>Worker app flow</h3><p>Toggle availability, accept jobs, move toward the customer, arrive, and complete the service.</p></div>
+        <div className="panel info-panel"><h3>Maps-ready tracking</h3><p>The current tracker is provider-agnostic and ready to swap to Google Maps when an API key is added.</p></div>
       </section>
     </>
   );
 }
 
-function HistorySection({ historyItems, analytics }) {
+function CustomerDashboard({
+  activeBooking,
+  bookingForm,
+  bookings,
+  busy,
+  services,
+  workerPreview,
+  onBookingFormChange,
+  onCreateBooking,
+  onPayBooking,
+  onSelectBooking,
+}) {
+  return (
+    <>
+      <section className="panel controls">
+        <div className="panel-header">
+          <h2>Book a Service</h2>
+          <p>Pick the service, confirm your coordinates, and IlGo will dispatch the best match.</p>
+        </div>
+
+        <form className="form-grid" onSubmit={onCreateBooking}>
+          <label>
+            Service
+            <select value={bookingForm.serviceSlug} onChange={(event) => updateForm(onBookingFormChange, "serviceSlug", event.target.value)}>
+              {services.map((service) => (
+                <option key={service.slug} value={service.slug}>
+                  {service.name} from Rs. {service.basePrice}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Latitude
+            <input type="number" step="0.0001" value={bookingForm.latitude} onChange={(event) => updateForm(onBookingFormChange, "latitude", event.target.value)} />
+          </label>
+          <label>
+            Longitude
+            <input type="number" step="0.0001" value={bookingForm.longitude} onChange={(event) => updateForm(onBookingFormChange, "longitude", event.target.value)} />
+          </label>
+          <label className="full-width">
+            Job note
+            <input type="text" value={bookingForm.note} placeholder="Leaking sink, fan not spinning, deep clean before move-in..." onChange={(event) => updateForm(onBookingFormChange, "note", event.target.value)} />
+          </label>
+          <button type="submit" disabled={busy}>{busy ? "Dispatching..." : "Confirm IlGo booking"}</button>
+        </form>
+      </section>
+
+      <section className="workspace">
+        <article className="panel">
+          <div className="panel-header">
+            <h2>Nearby Workers</h2>
+            <p>Ranked with a weighted score across distance, rating, and price.</p>
+          </div>
+          <div className="list-stack">
+            {workerPreview.map((worker) => (
+              <div key={worker.id} className="history-card">
+                <div className="history-header">
+                  <div>
+                    <p className="eyebrow small">{worker.skillSlug}</p>
+                    <h3>{worker.name}</h3>
+                  </div>
+                  <div className="score-pill">{worker.rating.toFixed(1)} star</div>
+                </div>
+                <p className="history-meta">
+                  {worker.distanceKm ?? "--"} km away | Rs. {worker.hourlyRate}/hr | score {worker.matchScore ?? "--"}
+                </p>
+                <p className="history-summary">{worker.isAvailable ? "Available now" : "Currently busy"}. Completed jobs: {worker.completedJobs}.</p>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <h2>Tracking Screen</h2>
+            <p>Live worker location, ETA, payment status, and a maps-ready visual board.</p>
+          </div>
+
+          {activeBooking ? (
+            <TrackingPanel booking={activeBooking} busy={busy} onPay={onPayBooking} />
+          ) : (
+            <EmptyState text="Create a booking to open the tracking screen." />
+          )}
+        </article>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Recent Bookings</h2>
+          <p>Tap any job to focus the live tracker.</p>
+        </div>
+        {bookings.length ? (
+          <div className="list-stack">
+            {bookings.map((booking) => (
+              <button key={booking.id} type="button" className="history-card selectable-card" onClick={() => onSelectBooking(booking)}>
+                <div className="history-header">
+                  <div>
+                    <p className="eyebrow small">{booking.serviceName}</p>
+                    <h3>{booking.worker.name}</h3>
+                  </div>
+                  <div className={`status-pill ${booking.status}`}>{booking.status}</div>
+                </div>
+                <p className="history-meta">ETA {booking.etaMinutes} min | Rs. {booking.priceEstimate}</p>
+                <p className="history-summary">{booking.note || booking.serviceDescription}</p>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <EmptyState text="Your booking history will appear here after the first request." />
+        )}
+      </section>
+    </>
+  );
+}
+
+function TrackingPanel({ booking, busy, onPay }) {
+  const progress = journeyProgress(booking);
+
+  return (
+    <div className="tracking-stack">
+      <div className="brief-meta">
+        <MetaCard label="Worker" value={booking.worker.name} />
+        <MetaCard label="Status" value={booking.status} />
+        <MetaCard label="ETA" value={`${booking.etaMinutes} min`} />
+        <MetaCard label="Estimate" value={`Rs. ${booking.priceEstimate}`} />
+      </div>
+
+      <div className="map-board">
+        <div className="route-line" style={{ width: `${Math.max(progress, 8)}%` }} />
+        <div className="map-pin customer" style={{ left: "84%" }}>
+          <span>Customer</span>
+        </div>
+        <div className="map-pin worker" style={{ left: `${Math.min(progress, 84)}%` }}>
+          <span>{booking.worker.name}</span>
+        </div>
+      </div>
+
+      <div className="tracking-copy">
+        <p>
+          {booking.worker.name} is handling your {booking.serviceName.toLowerCase()} request.
+          Coordinates: {booking.workerLatitude.toFixed(4)}, {booking.workerLongitude.toFixed(4)}.
+        </p>
+        <p>
+          Google Maps handoff: replace this board with a JS Maps component and feed these same live coordinates into the route markers.
+        </p>
+      </div>
+
+      <div className="voice-controls">
+        <div className={`status-pill ${booking.status}`}>{booking.status}</div>
+        {!booking.payment ? (
+          <button type="button" disabled={busy || !["arrived", "completed"].includes(booking.status)} onClick={onPay}>
+            {busy ? "Processing..." : `Pay Rs. ${booking.priceEstimate} + tip`}
+          </button>
+        ) : (
+          <div className="payment-note">Paid Rs. {booking.payment.amount} + Rs. {booking.payment.tip} tip</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WorkerHub({ busy, jobs, selectedWorker, workers, onMoveWorker, onSelectWorker, onToggleAvailability, onUpdateStatus }) {
   return (
     <section className="panel">
       <div className="panel-header">
-        <h2>Saved Practice History</h2>
-        <p>Review previous sessions, recent scores, and coaching summaries.</p>
+        <h2>Worker App Console</h2>
+        <p>Simulate the worker experience: availability, incoming jobs, navigation, and completion.</p>
       </div>
-      <AnalyticsPanel analytics={analytics} />
-      {historyItems.length ? (
-        <div className="history-list">
-          {historyItems.map((item) => (
-            <article key={item.id} className="history-card">
+
+      <div className="worker-toolbar">
+        <label>
+          Active worker
+          <select value={selectedWorker?.id || ""} onChange={(event) => onSelectWorker(event.target.value)}>
+            {workers.map((worker) => (
+              <option key={worker.id} value={worker.id}>
+                {worker.name} | {worker.skillSlug}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {selectedWorker ? (
+          <div className="worker-actions">
+            <MetaCard label="Rating" value={selectedWorker.rating.toFixed(1)} />
+            <MetaCard label="Availability" value={selectedWorker.isAvailable ? "Online" : "Offline"} />
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => onToggleAvailability(!selectedWorker.isAvailable)}>
+              {selectedWorker.isAvailable ? "Go offline" : "Go online"}
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      {jobs.length ? (
+        <div className="list-stack">
+          {jobs.map((job) => (
+            <article key={job.id} className="history-card">
               <div className="history-header">
                 <div>
-                  <p className="eyebrow small">{item.modeLabel}</p>
-                  <h3>{item.topic}</h3>
+                  <p className="eyebrow small">{job.serviceName}</p>
+                  <h3>{job.note || "Customer request"}</h3>
                 </div>
-                <div className="score-pill">{item.latestScores?.overall || 0}/100</div>
+                <div className={`status-pill ${job.status}`}>{job.status}</div>
               </div>
-              <p className="history-meta">{item.learnerLevel} level | {item.turnCount} turns | {new Date(item.updatedAt).toLocaleString()}</p>
-              <p className="history-summary">{item.latestSummary}</p>
+              <p className="history-meta">
+                Customer at {job.customerLatitude.toFixed(4)}, {job.customerLongitude.toFixed(4)} | ETA {job.etaMinutes} min
+              </p>
+              <div className="worker-job-actions">
+                <button type="button" disabled={busy || job.status !== "requested"} onClick={() => onUpdateStatus(job, "accepted")}>Accept</button>
+                <button type="button" className="secondary-button" disabled={busy || !["accepted", "enroute"].includes(job.status)} onClick={() => onMoveWorker(job)}>Move closer</button>
+                <button type="button" className="secondary-button" disabled={busy || !["accepted", "enroute"].includes(job.status)} onClick={() => onUpdateStatus(job, "arrived")}>Arrived</button>
+                <button type="button" disabled={busy || job.status !== "arrived"} onClick={() => onUpdateStatus(job, "completed")}>Complete</button>
+              </div>
             </article>
           ))}
         </div>
       ) : (
-        <EmptyState text="Your saved history will appear here after you finish a practice round." />
+        <EmptyState text="No jobs yet for this worker. Create a booking from the customer screen to test dispatch." />
       )}
     </section>
   );
 }
 
-function VoiceStudio({ realtimeState, realtimeSupport, realtimeAvailable, onStart, onStop }) {
+function DeployGuide() {
   return (
-    <section className="panel voice-studio">
+    <section className="panel">
       <div className="panel-header">
-        <h2>Voice Studio</h2>
-        <p>Talk to the Verbix AI coach in realtime.</p>
+        <h2>Deploy IlGo Step by Step</h2>
+        <p>These are the exact pieces to push this MVP from local build to hosted environment.</p>
       </div>
-      <div className="metrics-grid">
-        <MetaCard label="WebRTC" value={realtimeSupport.webrtc ? "supported" : "missing"} />
-        <MetaCard label="Mic" value={realtimeSupport.microphone ? "ready" : "missing"} />
-        <MetaCard label="Status" value={realtimeState.status} />
-        <MetaCard label="Model" value={realtimeState.model || "pending"} />
-      </div>
-      <div className="voice-controls">
-        <button type="button" disabled={!realtimeSupport.ready || !realtimeAvailable || realtimeState.status === "live"} onClick={onStart}>Start AI Conversation</button>
-        <button type="button" className="secondary-button" disabled={realtimeState.status !== "live"} onClick={onStop}>Stop AI Conversation</button>
-      </div>
-      {!realtimeAvailable ? <p className="inline-note">Realtime voice needs a valid `OPENAI_API_KEY` with available quota.</p> : null}
-      {realtimeState.error ? <p className="error-banner">{realtimeState.error}</p> : null}
-      <div className="realtime-feed">
-        {realtimeState.messages.length ? realtimeState.messages.map((message, index) => (
-          <div key={`${message.role}_${index}`} className={`message-bubble ${message.role}`}>
-            <span>{message.role === "assistant" ? "Verbix Coach" : message.role === "score" ? "Live Score" : "System"}</span>
-            <p>{message.text}</p>
-          </div>
-        )) : <EmptyState text="Start the conversation and Verbix will greet you." />}
+
+      <div className="deploy-grid">
+        <div className="info-panel panel">
+          <h3>1. Runtime setup</h3>
+          <p>Use Node 20+, Postgres, and a platform that supports long-lived HTTP connections for the tracking stream.</p>
+        </div>
+        <div className="info-panel panel">
+          <h3>2. Environment</h3>
+          <p>Set `DATABASE_URL` and `AUTH_SECRET`. Add `OPENAI_API_KEY` later only if you want AI-powered support or pricing.</p>
+        </div>
+        <div className="info-panel panel">
+          <h3>3. Start command</h3>
+          <p>`npm install`, `npm run build`, then `npm start`. The server already serves the built Vite bundle.</p>
+        </div>
+        <div className="info-panel panel">
+          <h3>4. Health and routes</h3>
+          <p>Use `/api/health` for checks, keep `/api/ilgo/track/:bookingId` open for tracking, and ensure proxy buffering is disabled if needed.</p>
+        </div>
+        <div className="info-panel panel">
+          <h3>5. Railway or Render</h3>
+          <p>Railway is fastest for Postgres-backed deployment. Render also works well if you need separate web and database services.</p>
+        </div>
+        <div className="info-panel panel">
+          <h3>6. Google Maps upgrade</h3>
+          <p>Add `VITE_GOOGLE_MAPS_API_KEY`, replace the tracker board with a Maps component, and pass live worker/customer coordinates into markers and routes.</p>
+        </div>
       </div>
     </section>
   );
@@ -759,23 +751,28 @@ function updateForm(setter, key, value) {
   }));
 }
 
-function calculateVoiceMetrics(text, durationSeconds) {
-  const cleaned = (text || "").trim();
-  const words = cleaned ? cleaned.split(/\s+/) : [];
-  const fillerMatches = cleaned.toLowerCase().match(/\b(um|uh|like|you know|basically|actually)\b/g) || [];
-  const wordsPerMinute = durationSeconds > 0 ? Math.round((words.length / durationSeconds) * 60) : 0;
-  const pacePenalty = wordsPerMinute === 0 ? 25 : Math.max(Math.abs(wordsPerMinute - 135) - 20, 0) / 2;
-  const fillerPenalty = fillerMatches.length * 6;
-  const fluencyScore = clamp(Math.round(90 - pacePenalty - fillerPenalty), 20, 100);
+function mergeBooking(items, booking) {
+  const nextItems = [booking, ...items.filter((item) => item.id !== booking.id)];
+  return nextItems.sort((left, right) => new Date(right.updatedAt) - new Date(left.updatedAt));
+}
 
+function moveToward(startLatitude, startLongitude, targetLatitude, targetLongitude, ratio) {
   return {
-    wordCount: words.length,
-    wordsPerMinute,
-    fillerCount: fillerMatches.length,
-    fluencyScore,
+    latitude: Number((startLatitude + (targetLatitude - startLatitude) * ratio).toFixed(6)),
+    longitude: Number((startLongitude + (targetLongitude - startLongitude) * ratio).toFixed(6)),
   };
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
+function journeyProgress(booking) {
+  const distanceGap = Math.abs(booking.customerLongitude - booking.workerLongitude) + Math.abs(booking.customerLatitude - booking.workerLatitude);
+
+  if (booking.status === "arrived" || booking.status === "completed" || booking.status === "paid") {
+    return 84;
+  }
+
+  if (distanceGap === 0) {
+    return 84;
+  }
+
+  return Math.max(12, Math.min(76, Math.round(84 - distanceGap * 5000)));
 }

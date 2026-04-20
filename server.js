@@ -8,9 +8,22 @@ const { evaluateTurnWithOpenAI, DEFAULT_MODEL } = require("./src/openaiCoach");
 const { registerUser, loginUser, createToken, getUserFromToken } = require("./src/auth");
 const { createStoredSession, getAnalyticsForUser, getHistoryForUser, savePracticeResult } = require("./src/dataStore");
 const { connectRealtimeVoice, REALTIME_MODEL } = require("./src/realtime");
+const {
+  createBooking,
+  createPayment,
+  getBookingById,
+  getBootstrapData,
+  listBookingsForUser,
+  listWorkerJobs,
+  listWorkers,
+  updateBookingStatus,
+  updateWorkerAvailability,
+  updateWorkerLocation,
+} = require("./src/ilgoStore");
 
 const PORT = process.env.PORT || 3000;
 const sessions = new Map();
+const trackingStreams = new Map();
 
 const clientBuildDir = path.join(__dirname, "dist");
 const openAIEnabled = Boolean(process.env.OPENAI_API_KEY);
@@ -29,7 +42,7 @@ function sendJson(res, statusCode, payload) {
 
 function withCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
@@ -93,15 +106,50 @@ async function scoreTranscript(session, responseText, source = "realtime") {
   result.session.evaluationEngine = openAIEnabled ? `openai:${DEFAULT_MODEL}` : "heuristic";
   sessions.set(result.session.id, result.session);
 
-      if (result.session.userId) {
-        await savePracticeResult(result.session, result.turn);
-      }
+  if (result.session.userId) {
+    await savePracticeResult(result.session, result.turn);
+  }
 
   return result;
 }
 
+function addTrackingStream(bookingId, res) {
+  const current = trackingStreams.get(bookingId) || new Set();
+  current.add(res);
+  trackingStreams.set(bookingId, current);
+}
+
+function removeTrackingStream(bookingId, res) {
+  const current = trackingStreams.get(bookingId);
+
+  if (!current) {
+    return;
+  }
+
+  current.delete(res);
+
+  if (current.size === 0) {
+    trackingStreams.delete(bookingId);
+  }
+}
+
+function broadcastTracking(bookingId, payload) {
+  const current = trackingStreams.get(bookingId);
+
+  if (!current?.size) {
+    return;
+  }
+
+  const body = `data: ${JSON.stringify(payload)}\n\n`;
+
+  for (const stream of current) {
+    stream.write(body);
+  }
+}
+
 function serveStatic(req, res) {
-  const requestedPath = req.url === "/" ? "/index.html" : req.url;
+  const rawPath = String(req.url || "").split("?")[0];
+  const requestedPath = rawPath === "/" ? "/index.html" : rawPath;
   const safePath = path.normalize(requestedPath).replace(/^(\.\.[/\\])+/, "");
   const filePath = path.join(clientBuildDir, safePath);
 
@@ -140,6 +188,9 @@ function serveStatic(req, res) {
 const server = http.createServer(async (req, res) => {
   try {
     withCors(res);
+    const requestUrl = new URL(req.url, `http://${req.headers.host || `localhost:${PORT}`}`);
+    const pathname = requestUrl.pathname;
+    const parts = pathname.split("/").filter(Boolean);
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
@@ -147,7 +198,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && req.url === "/api/health") {
+    if (req.method === "GET" && pathname === "/api/health") {
       sendJson(res, 200, {
         status: "ok",
         evaluationEngine: openAIEnabled ? `openai:${DEFAULT_MODEL}` : "heuristic",
@@ -156,17 +207,66 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && req.url === "/api/app-config") {
+    if (req.method === "GET" && pathname === "/api/app-config") {
       sendJson(res, 200, {
-        brand: "Verbix",
-        evaluationEngine: openAIEnabled ? `openai:${DEFAULT_MODEL}` : "heuristic",
-        realtimeAvailable: Boolean(process.env.OPENAI_API_KEY),
-        realtimeEngine: process.env.OPENAI_API_KEY ? `openai:${REALTIME_MODEL}` : "disabled",
+        brand: "IlGo",
+        productTagline: "Instant home services with live worker tracking",
+        deploymentTarget: "Railway or Render",
       });
       return;
     }
 
-    if (req.method === "POST" && req.url === "/api/auth/register") {
+    if (req.method === "GET" && pathname === "/api/ilgo/bootstrap") {
+      sendJson(res, 200, {
+        brand: "IlGo",
+        ...(await getBootstrapData()),
+      });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/ilgo/workers") {
+      const serviceSlug = requestUrl.searchParams.get("service");
+      const latitude = parseCoordinate(requestUrl.searchParams.get("latitude"));
+      const longitude = parseCoordinate(requestUrl.searchParams.get("longitude"));
+
+      sendJson(res, 200, {
+        items: await listWorkers({ serviceSlug, latitude, longitude }),
+      });
+      return;
+    }
+
+    if (req.method === "GET" && parts[0] === "api" && parts[1] === "ilgo" && parts[2] === "workers" && parts[4] === "jobs") {
+      sendJson(res, 200, {
+        items: await listWorkerJobs(parts[3]),
+      });
+      return;
+    }
+
+    if (req.method === "POST" && parts[0] === "api" && parts[1] === "ilgo" && parts[2] === "workers" && parts[4] === "availability") {
+      const payload = await readBody(req);
+      sendJson(res, 200, {
+        worker: await updateWorkerAvailability(parts[3], payload.isAvailable),
+      });
+      return;
+    }
+
+    if (req.method === "POST" && parts[0] === "api" && parts[1] === "ilgo" && parts[2] === "workers" && parts[4] === "location") {
+      const payload = await readBody(req);
+      const booking = await updateWorkerLocation(parts[3], {
+        latitude: Number(payload.latitude),
+        longitude: Number(payload.longitude),
+        bookingId: payload.bookingId,
+      });
+
+      if (booking) {
+        broadcastTracking(booking.id, { type: "location", booking });
+      }
+
+      sendJson(res, 200, { booking });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/register") {
       const payload = await readBody(req);
       const user = await registerUser(payload);
       const token = await createToken(user);
@@ -174,7 +274,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/api/auth/login") {
+    if (req.method === "POST" && pathname === "/api/auth/login") {
       const payload = await readBody(req);
       const user = await loginUser(payload);
       const token = await createToken(user);
@@ -182,7 +282,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && req.url === "/api/auth/me") {
+    if (req.method === "GET" && pathname === "/api/auth/me") {
       const user = await getAuthenticatedUser(req);
 
       if (!user) {
@@ -194,7 +294,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && req.url === "/api/history") {
+    if (req.method === "GET" && pathname === "/api/history") {
       const user = await getAuthenticatedUser(req);
 
       if (!user) {
@@ -208,7 +308,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && req.url === "/api/analytics") {
+    if (req.method === "GET" && pathname === "/api/analytics") {
       const user = await getAuthenticatedUser(req);
 
       if (!user) {
@@ -220,7 +320,94 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/api/session/start") {
+    if (req.method === "GET" && pathname === "/api/ilgo/bookings") {
+      const user = await getAuthenticatedUser(req);
+
+      if (!user) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+
+      sendJson(res, 200, {
+        items: await listBookingsForUser(user.id),
+      });
+      return;
+    }
+
+    if (req.method === "GET" && parts[0] === "api" && parts[1] === "ilgo" && parts[2] === "bookings" && parts.length === 4) {
+      const booking = await getBookingById(parts[3]);
+
+      if (!booking) {
+        sendJson(res, 404, { error: "Booking not found" });
+        return;
+      }
+
+      sendJson(res, 200, { booking });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/ilgo/bookings") {
+      const user = await getAuthenticatedUser(req);
+
+      if (!user) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+
+      const payload = await readBody(req);
+      const booking = await createBooking({
+        customerId: user.id,
+        serviceSlug: payload.serviceSlug,
+        latitude: Number(payload.latitude),
+        longitude: Number(payload.longitude),
+        note: payload.note,
+      });
+
+      broadcastTracking(booking.id, { type: "booking-created", booking });
+      sendJson(res, 200, { booking });
+      return;
+    }
+
+    if (req.method === "POST" && parts[0] === "api" && parts[1] === "ilgo" && parts[2] === "bookings" && parts[4] === "status") {
+      const payload = await readBody(req);
+      const booking = await updateBookingStatus(parts[3], payload.workerId, payload.status);
+      broadcastTracking(parts[3], { type: "status", booking });
+      sendJson(res, 200, { booking });
+      return;
+    }
+
+    if (req.method === "POST" && parts[0] === "api" && parts[1] === "ilgo" && parts[2] === "bookings" && parts[4] === "pay") {
+      const payload = await readBody(req);
+      const booking = await createPayment({
+        bookingId: parts[3],
+        amount: payload.amount,
+        tip: payload.tip,
+      });
+      broadcastTracking(parts[3], { type: "payment", booking });
+      sendJson(res, 200, { booking });
+      return;
+    }
+
+    if (req.method === "GET" && parts[0] === "api" && parts[1] === "ilgo" && parts[2] === "track" && parts[3]) {
+      const booking = await getBookingById(parts[3]);
+
+      if (!booking) {
+        sendJson(res, 404, { error: "Booking not found" });
+        return;
+      }
+
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      });
+      res.write(`data: ${JSON.stringify({ type: "snapshot", booking })}\n\n`);
+      addTrackingStream(parts[3], res);
+      req.on("close", () => removeTrackingStream(parts[3], res));
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/session/start") {
       const payload = await readBody(req);
       const session = createSession(payload);
       session.evaluationEngine = openAIEnabled ? `openai:${DEFAULT_MODEL}` : "heuristic";
@@ -232,7 +419,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/api/session/respond") {
+    if (req.method === "POST" && pathname === "/api/session/respond") {
       const payload = await readBody(req);
       const session = sessions.get(payload.sessionId);
 
@@ -246,7 +433,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/api/realtime/connect") {
+    if (req.method === "POST" && pathname === "/api/realtime/connect") {
       const user = await getAuthenticatedUser(req);
       const payload = await readBody(req);
       const realtimeSession = createSession({
@@ -275,7 +462,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/api/realtime/score") {
+    if (req.method === "POST" && pathname === "/api/realtime/score") {
       const user = await getAuthenticatedUser(req);
       const payload = await readBody(req);
       const session = sessions.get(payload.sessionId);
@@ -313,10 +500,19 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+function parseCoordinate(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 initDb()
   .then(() => {
     server.listen(PORT, () => {
-      console.log(`Verbix running at http://localhost:${PORT}`);
+      console.log(`IlGo running at http://localhost:${PORT}`);
     });
   })
   .catch((error) => {

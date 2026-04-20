@@ -1,8 +1,8 @@
 {
-  "name": "verbix",
+  "name": "ilgo",
   "version": "0.1.0",
   "private": true,
-  "description": "MVP AI communication coach for group discussions, public speaking, and presentation practice.",
+  "description": "IlGo marketplace MVP for instant home services, worker dispatch, and live tracking.",
   "scripts": {
     "start": "node server.js",
     "dev:server": "node server.js",
