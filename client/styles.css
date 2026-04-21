@@ -453,7 +453,6 @@ input::placeholder { color: var(--ink-3); }
   font-variant-numeric: tabular-nums;
 }
 
-.tracking-footer { }
 .paid-note {
   padding: 12px 18px;
   border-radius: var(--radius-md);
