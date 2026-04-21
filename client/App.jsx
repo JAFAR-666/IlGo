@@ -1,6 +1,7 @@
 import React from "react";
 const API_BASE_URL = "https://ilgo.onrender.com";
 import { useEffect, useState } from "react";
+import MapView from "./MapView.jsx";
 
 const initialAuth = {
   name: "",
@@ -585,9 +586,12 @@ function TrackingPanel({ booking, busy, onPay }) {
 
       {/* Map board */}
       <div className="map-board">
-        <div className="map-track">
-          <div className="map-progress" style={{ width: `${Math.max(progress, 6)}%` }} />
-        </div>
+        <MapView
+          workerLat={booking.workerLatitude}
+          workerLng={booking.workerLongitude}
+          customerLat={booking.customerLatitude}
+          customerLng={booking.customerLongitude}
+        />
         <div className="map-pin map-pin--worker" style={{ left: `${Math.min(progress, 82)}%` }}>
           <div className="pin-dot" />
           <span>{booking.worker.name}</span>
