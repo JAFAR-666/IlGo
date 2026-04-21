@@ -220,25 +220,7 @@ export default function App() {
     }
   }
 
-  async function handleMoveWorker(job) {
-    const nextPoint = moveToward(job.workerLatitude, job.workerLongitude, job.customerLatitude, job.customerLongitude, 0.35);
-    setBusy(true);
-    try {
-      const result = await fetchJson(`/api/ilgo/workers/${selectedWorkerId}/location`, {
-        method: "POST",
-        body: JSON.stringify({ bookingId: job.id, latitude: nextPoint.latitude, longitude: nextPoint.longitude }),
-      });
-      if (result.booking) {
-        setWorkerJobs((current) => mergeBooking(current, result.booking));
-        setBookings((current) => mergeBooking(current, result.booking));
-        if (activeBooking?.id === result.booking.id) setActiveBooking(result.booking);
-      }
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setBusy(false);
-    }
-  }
+  // REMOVED: handleMoveWorker — real GPS now handles worker location updates
 
   function handleLogout() {
     localStorage.removeItem(tokenStorageKey);
@@ -338,7 +320,6 @@ export default function App() {
                 jobs={workerJobs}
                 selectedWorker={selectedWorker}
                 workers={catalog.workers}
-                onMoveWorker={handleMoveWorker}
                 onSelectWorker={setSelectedWorkerId}
                 onToggleAvailability={handleWorkerAvailability}
                 onUpdateStatus={handleWorkerStatus}
@@ -566,6 +547,15 @@ function CustomerDashboard({ activeBooking, bookingForm, bookings, busy, service
 /* ──────────────────────────── TrackingPanel ──────────────────────────── */
 
 function TrackingPanel({ booking, busy, onPay }) {
+  // ✅ REAL distance + ETA calculated from live coordinates
+  const distance = getDistanceKm(
+    booking.workerLatitude,
+    booking.workerLongitude,
+    booking.customerLatitude,
+    booking.customerLongitude
+  );
+  const eta = calculateETA(distance);
+
   const progress = journeyProgress(booking);
   return (
     <div className="tracking">
@@ -573,7 +563,7 @@ function TrackingPanel({ booking, busy, onPay }) {
       <div className="tracking-meta">
         {[
           { label: "Worker", val: booking.worker.name },
-          { label: "ETA", val: `${booking.etaMinutes} min` },
+          { label: "ETA", val: `${eta} min` },          // ✅ real ETA
           { label: "Estimate", val: `₹${booking.priceEstimate}` },
         ].map(({ label, val }) => (
           <div key={label} className="tracking-chip">
@@ -581,6 +571,11 @@ function TrackingPanel({ booking, busy, onPay }) {
             <strong>{val}</strong>
           </div>
         ))}
+        {/* ✅ Real distance chip */}
+        <div className="tracking-chip">
+          <span>Distance</span>
+          <strong>{distance.toFixed(2)} km</strong>
+        </div>
         <span className={`status-badge status--${booking.status}`}>{booking.status}</span>
       </div>
 
@@ -628,12 +623,35 @@ function TrackingPanel({ booking, busy, onPay }) {
 
 /* ──────────────────────────── WorkerHub ──────────────────────────── */
 
-function WorkerHub({ busy, jobs, selectedWorker, workers, onMoveWorker, onSelectWorker, onToggleAvailability, onUpdateStatus }) {
+// ✅ FIXED: useEffect is now OUTSIDE the return statement (was broken before)
+function WorkerHub({ busy, jobs, selectedWorker, workers, onSelectWorker, onToggleAvailability, onUpdateStatus }) {
+  // ✅ Real GPS tracking — sends worker's actual device location to the server
+  useEffect(() => {
+    if (!selectedWorker) return;
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+
+        fetch("https://ilgo.onrender.com/api/ilgo/workers/" + selectedWorker.id + "/location", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ latitude: lat, longitude: lng }),
+        }).catch((err) => console.error("Location update failed:", err));
+      },
+      (err) => console.error("Geolocation error:", err),
+      { enableHighAccuracy: true }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [selectedWorker]);
+
   return (
     <div className="card">
       <div className="card-header">
         <h2>Worker console</h2>
-        <p>Simulate the worker experience: availability, dispatch, navigation, completion.</p>
+        <p>Real GPS active — your device location is sent live to customers.</p>
       </div>
 
       <div className="worker-toolbar">
@@ -678,13 +696,15 @@ function WorkerHub({ busy, jobs, selectedWorker, workers, onMoveWorker, onSelect
                 <div>
                   <span className="booking-service">{job.serviceName}</span>
                   <strong>{job.note || "Customer request"}</strong>
-                  <span className="worker-meta">Customer at {job.customerLatitude.toFixed(4)}, {job.customerLongitude.toFixed(4)} · ETA {job.etaMinutes} min</span>
+                  <span className="worker-meta">
+                    Customer at {job.customerLatitude.toFixed(4)}, {job.customerLongitude.toFixed(4)} · ETA {job.etaMinutes} min
+                  </span>
                 </div>
                 <span className={`status-badge status--${job.status}`}>{job.status}</span>
               </div>
+              {/* ✅ "Move closer" button removed — real GPS handles movement */}
               <div className="job-actions">
                 <button type="button" className="action-btn" disabled={busy || job.status !== "requested"} onClick={() => onUpdateStatus(job, "accepted")}>Accept</button>
-                <button type="button" className="action-btn action-btn--secondary" disabled={busy || !["accepted", "enroute"].includes(job.status)} onClick={() => onMoveWorker(job)}>Move closer</button>
                 <button type="button" className="action-btn action-btn--secondary" disabled={busy || !["accepted", "enroute"].includes(job.status)} onClick={() => onUpdateStatus(job, "arrived")}>Arrived</button>
                 <button type="button" className="action-btn" disabled={busy || job.status !== "arrived"} onClick={() => onUpdateStatus(job, "completed")}>Complete</button>
               </div>
@@ -759,16 +779,29 @@ function mergeBooking(items, booking) {
   );
 }
 
-function moveToward(startLat, startLng, targetLat, targetLng, ratio) {
-  return {
-    latitude: Number((startLat + (targetLat - startLat) * ratio).toFixed(6)),
-    longitude: Number((startLng + (targetLng - startLng) * ratio).toFixed(6)),
-  };
-}
-
 function journeyProgress(booking) {
   if (["arrived", "completed", "paid"].includes(booking.status)) return 84;
   const gap = Math.abs(booking.customerLongitude - booking.workerLongitude) + Math.abs(booking.customerLatitude - booking.workerLatitude);
   if (gap === 0) return 84;
   return Math.max(12, Math.min(76, Math.round(84 - gap * 5000)));
+}
+
+// ✅ Haversine formula — real-world distance between two GPS coordinates
+function getDistanceKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) *
+    Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) *
+    Math.sin(dLon / 2);
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+// ✅ ETA based on 30 km/h average speed
+function calculateETA(distanceKm) {
+  const speed = 30; // km/h
+  return Math.round((distanceKm / speed) * 60);
 }
