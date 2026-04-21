@@ -62,9 +62,7 @@ export default function App() {
     }
 
     localStorage.setItem(tokenStorageKey, token);
-    fetchJson("/api/auth/me", {
-      headers: authHeaders(token),
-    })
+    fetchJson("/api/auth/me", { headers: authHeaders(token) })
       .then(async (data) => {
         setUser(data.user);
         await loadBookings(token);
@@ -78,44 +76,29 @@ export default function App() {
   useEffect(() => {
     const latitude = Number(bookingForm.latitude);
     const longitude = Number(bookingForm.longitude);
-
-    if (!bookingForm.serviceSlug || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      return;
-    }
-
+    if (!bookingForm.serviceSlug || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
     fetchJson(`/api/ilgo/workers?service=${encodeURIComponent(bookingForm.serviceSlug)}&latitude=${latitude}&longitude=${longitude}`)
       .then((data) => setWorkerPreview(data.items || []))
       .catch((requestError) => setError(requestError.message));
   }, [bookingForm.latitude, bookingForm.longitude, bookingForm.serviceSlug]);
 
   useEffect(() => {
-    if (!selectedWorkerId) {
-      return;
-    }
-
+    if (!selectedWorkerId) return;
     loadWorkerJobs(selectedWorkerId);
   }, [selectedWorkerId]);
 
   useEffect(() => {
-    if (!activeBooking?.id) {
-      return undefined;
-    }
-
+    if (!activeBooking?.id) return undefined;
     const events = new EventSource(`/api/ilgo/track/${activeBooking.id}`);
     events.onmessage = (event) => {
       const payload = JSON.parse(event.data);
       const nextBooking = payload.booking;
-
-      if (!nextBooking) {
-        return;
-      }
-
+      if (!nextBooking) return;
       setActiveBooking(nextBooking);
       setBookings((current) => mergeBooking(current, nextBooking));
       setWorkerJobs((current) => mergeBooking(current, nextBooking));
     };
     events.onerror = () => events.close();
-
     return () => events.close();
   }, [activeBooking?.id]);
 
@@ -123,18 +106,10 @@ export default function App() {
     event.preventDefault();
     setBusy(true);
     setError("");
-
     try {
       const endpoint = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
-      const payload =
-        authMode === "login"
-          ? { email: authForm.email, password: authForm.password }
-          : authForm;
-      const data = await fetchJson(endpoint, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-
+      const payload = authMode === "login" ? { email: authForm.email, password: authForm.password } : authForm;
+      const data = await fetchJson(endpoint, { method: "POST", body: JSON.stringify(payload) });
       setToken(data.token);
       setUser(data.user);
       setAuthForm(initialAuth);
@@ -146,18 +121,11 @@ export default function App() {
   }
 
   async function loadBookings(activeToken = token) {
-    if (!activeToken) {
-      return;
-    }
-
-    const data = await fetchJson("/api/ilgo/bookings", {
-      headers: authHeaders(activeToken),
-    });
+    if (!activeToken) return;
+    const data = await fetchJson("/api/ilgo/bookings", { headers: authHeaders(activeToken) });
     setBookings(data.items || []);
     setActiveBooking((current) => {
-      if (!current) {
-        return data.items?.[0] || null;
-      }
+      if (!current) return data.items?.[0] || null;
       return data.items?.find((item) => item.id === current.id) || current;
     });
   }
@@ -171,7 +139,6 @@ export default function App() {
     event.preventDefault();
     setBusy(true);
     setError("");
-
     try {
       const bookingResponse = await fetchJson("/api/ilgo/bookings", {
         method: "POST",
@@ -182,7 +149,6 @@ export default function App() {
           longitude: Number(bookingForm.longitude),
         }),
       });
-
       setBookings((current) => [bookingResponse.booking, ...current.filter((item) => item.id !== bookingResponse.booking.id)]);
       setActiveBooking(bookingResponse.booking);
       setView("customer");
@@ -195,13 +161,9 @@ export default function App() {
   }
 
   async function handlePayBooking() {
-    if (!activeBooking) {
-      return;
-    }
-
+    if (!activeBooking) return;
     setBusy(true);
     setError("");
-
     try {
       const result = await fetchJson(`/api/ilgo/bookings/${activeBooking.id}/pay`, {
         method: "POST",
@@ -221,18 +183,13 @@ export default function App() {
   }
 
   async function handleWorkerAvailability(nextAvailability) {
-    if (!selectedWorkerId) {
-      return;
-    }
-
+    if (!selectedWorkerId) return;
     setBusy(true);
-
     try {
       const result = await fetchJson(`/api/ilgo/workers/${selectedWorkerId}/availability`, {
         method: "POST",
         body: JSON.stringify({ isAvailable: nextAvailability }),
       });
-
       setCatalog((current) => ({
         ...current,
         workers: current.workers.map((worker) => (worker.id === result.worker.id ? result.worker : worker)),
@@ -247,21 +204,14 @@ export default function App() {
 
   async function handleWorkerStatus(job, status) {
     setBusy(true);
-
     try {
       const result = await fetchJson(`/api/ilgo/bookings/${job.id}/status`, {
         method: "POST",
-        body: JSON.stringify({
-          workerId: selectedWorkerId,
-          status,
-        }),
+        body: JSON.stringify({ workerId: selectedWorkerId, status }),
       });
-
       setWorkerJobs((current) => mergeBooking(current, result.booking));
       setBookings((current) => mergeBooking(current, result.booking));
-      if (activeBooking?.id === result.booking.id) {
-        setActiveBooking(result.booking);
-      }
+      if (activeBooking?.id === result.booking.id) setActiveBooking(result.booking);
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -271,25 +221,16 @@ export default function App() {
 
   async function handleMoveWorker(job) {
     const nextPoint = moveToward(job.workerLatitude, job.workerLongitude, job.customerLatitude, job.customerLongitude, 0.35);
-
     setBusy(true);
-
     try {
       const result = await fetchJson(`/api/ilgo/workers/${selectedWorkerId}/location`, {
         method: "POST",
-        body: JSON.stringify({
-          bookingId: job.id,
-          latitude: nextPoint.latitude,
-          longitude: nextPoint.longitude,
-        }),
+        body: JSON.stringify({ bookingId: job.id, latitude: nextPoint.latitude, longitude: nextPoint.longitude }),
       });
-
       if (result.booking) {
         setWorkerJobs((current) => mergeBooking(current, result.booking));
         setBookings((current) => mergeBooking(current, result.booking));
-        if (activeBooking?.id === result.booking.id) {
-          setActiveBooking(result.booking);
-        }
+        if (activeBooking?.id === result.booking.id) setActiveBooking(result.booking);
       }
     } catch (requestError) {
       setError(requestError.message);
@@ -309,440 +250,494 @@ export default function App() {
   const selectedWorker = catalog.workers.find((worker) => worker.id === selectedWorkerId) || null;
 
   return (
-    <main className="ilgo-shell">
+    <div className="app">
+      {/* ── Top Nav ── */}
       <header className="topbar">
-        <div>
-          <p className="brand-mark">IlGo</p>
-          <p className="brand-subtitle">{config?.productTagline || "Instant home services with live worker tracking"}</p>
+        <div className="brand">
+          <span className="brand-logo">IlGo</span>
+          <span className="brand-tag">{config?.productTagline || "Instant home services"}</span>
         </div>
-        {user ? (
-          <div className="topbar-actions">
-            <button type="button" className={view === "customer" ? "nav-chip active" : "nav-chip"} onClick={() => setView("customer")}>Customer</button>
-            <button type="button" className={view === "worker" ? "nav-chip active" : "nav-chip"} onClick={() => setView("worker")}>Worker Hub</button>
-            <button type="button" className={view === "deploy" ? "nav-chip active" : "nav-chip"} onClick={() => setView("deploy")}>Deploy</button>
-            <button type="button" className="ghost-button" onClick={handleLogout}>Logout</button>
-          </div>
-        ) : null}
+
+        {user && (
+          <nav className="nav-pills">
+            {[
+              { key: "customer", label: "Book" },
+              { key: "worker", label: "Worker Hub" },
+              { key: "deploy", label: "Deploy" },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                className={`pill-btn ${view === key ? "pill-btn--active" : ""}`}
+                onClick={() => setView(key)}
+              >
+                {label}
+              </button>
+            ))}
+            <button type="button" className="pill-btn pill-btn--ghost" onClick={handleLogout}>
+              Sign out
+            </button>
+          </nav>
+        )}
       </header>
 
-      {!user ? (
-        <Landing
-          authForm={authForm}
-          authMode={authMode}
-          busy={busy}
-          error={error}
-          onAuthModeChange={setAuthMode}
-          onAuthFormChange={setAuthForm}
-          onSubmit={handleAuthSubmit}
-        />
-      ) : (
-        <>
-          <section className="hero-banner panel">
-            <div>
-              <p className="eyebrow">Service marketplace MVP</p>
-              <h1>{user.name}, IlGo is ready to dispatch.</h1>
-              <p className="hero-copy">
-                Book an expert, watch the worker move in real time, and use the worker console to simulate the full job lifecycle before deployment.
-              </p>
-            </div>
-            <div className="roadmap">
-              <MetricCard title="Services" score={catalog.services.length} description="Bookable categories" />
-              <MetricCard title="Workers" score={catalog.workers.length} description="Seeded nearby pros" />
-              <MetricCard title="Bookings" score={bookings.length} description="Customer history" />
-            </div>
-          </section>
+      {/* ── Main content ── */}
+      <main className="main">
+        {!user ? (
+          <Landing
+            authForm={authForm}
+            authMode={authMode}
+            busy={busy}
+            error={error}
+            onAuthModeChange={setAuthMode}
+            onAuthFormChange={setAuthForm}
+            onSubmit={handleAuthSubmit}
+          />
+        ) : (
+          <>
+            {/* Stats bar */}
+            <section className="stats-bar card">
+              <div className="stats-bar__welcome">
+                <p className="label">Welcome back</p>
+                <h2 className="stats-bar__name">{user.name}</h2>
+              </div>
+              {[
+                { title: "Services", value: catalog.services.length, sub: "categories" },
+                { title: "Workers", value: catalog.workers.length, sub: "nearby pros" },
+                { title: "Bookings", value: bookings.length, sub: "your history" },
+              ].map(({ title, value, sub }) => (
+                <div key={title} className="stat-chip">
+                  <strong>{value}</strong>
+                  <span>{title}</span>
+                  <p>{sub}</p>
+                </div>
+              ))}
+            </section>
 
-          {error ? <p className="error-banner">{error}</p> : null}
+            {error && <div className="error-bar">{error}</div>}
 
-          {view === "customer" ? (
-            <CustomerDashboard
-              activeBooking={activeBooking}
-              bookingForm={bookingForm}
-              bookings={bookings}
-              busy={busy}
-              services={catalog.services}
-              workerPreview={workerPreview}
-              onBookingFormChange={setBookingForm}
-              onCreateBooking={handleCreateBooking}
-              onPayBooking={handlePayBooking}
-              onSelectBooking={setActiveBooking}
-            />
-          ) : null}
+            {view === "customer" && (
+              <CustomerDashboard
+                activeBooking={activeBooking}
+                bookingForm={bookingForm}
+                bookings={bookings}
+                busy={busy}
+                services={catalog.services}
+                workerPreview={workerPreview}
+                onBookingFormChange={setBookingForm}
+                onCreateBooking={handleCreateBooking}
+                onPayBooking={handlePayBooking}
+                onSelectBooking={setActiveBooking}
+              />
+            )}
 
-          {view === "worker" ? (
-            <WorkerHub
-              busy={busy}
-              jobs={workerJobs}
-              selectedWorker={selectedWorker}
-              workers={catalog.workers}
-              onMoveWorker={handleMoveWorker}
-              onSelectWorker={setSelectedWorkerId}
-              onToggleAvailability={handleWorkerAvailability}
-              onUpdateStatus={handleWorkerStatus}
-            />
-          ) : null}
+            {view === "worker" && (
+              <WorkerHub
+                busy={busy}
+                jobs={workerJobs}
+                selectedWorker={selectedWorker}
+                workers={catalog.workers}
+                onMoveWorker={handleMoveWorker}
+                onSelectWorker={setSelectedWorkerId}
+                onToggleAvailability={handleWorkerAvailability}
+                onUpdateStatus={handleWorkerStatus}
+              />
+            )}
 
-          {view === "deploy" ? <DeployGuide /> : null}
-        </>
-      )}
-    </main>
+            {view === "deploy" && <DeployGuide />}
+          </>
+        )}
+      </main>
+    </div>
   );
 }
 
+/* ─────────────────────────────── Landing ─────────────────────────────── */
+
 function Landing({ authForm, authMode, busy, error, onAuthModeChange, onAuthFormChange, onSubmit }) {
   return (
-    <>
+    <div className="landing">
+      {/* Hero */}
       <section className="landing-hero">
-        <div className="hero-copy-block">
-          <p className="eyebrow">Real product direction</p>
-          <h1>IlGo connects households with trusted local pros and shows every move live.</h1>
-          <p className="hero-copy">
-            This web MVP mirrors the customer and worker app flow: discovery, matching, booking, tracking, payment, and deployment preparation.
+        <div className="landing-hero__copy">
+          <p className="eyebrow">Home services, reinvented</p>
+          <h1 className="landing-h1">
+            Trusted pros, <br />
+            <span className="accent-text">live at your door.</span>
+          </h1>
+          <p className="landing-sub">
+            Book a verified expert, track them in real time, and pay only when the job's done.
           </p>
-          <div className="hero-pills">
-            <span>Customer booking journey</span>
-            <span>Worker dispatch console</span>
-            <span>Live tracking stream</span>
+          <div className="feature-tags">
+            <span>⚡ Instant dispatch</span>
+            <span>📍 Live tracking</span>
+            <span>🔒 Secure payments</span>
           </div>
         </div>
 
-        <div className="panel auth-card">
+        {/* Auth card */}
+        <div className="card auth-card">
           <div className="auth-tabs">
-            <button type="button" className={authMode === "login" ? "nav-chip active" : "nav-chip"} onClick={() => onAuthModeChange("login")}>Login</button>
-            <button type="button" className={authMode === "register" ? "nav-chip active" : "nav-chip"} onClick={() => onAuthModeChange("register")}>Create account</button>
+            {["login", "register"].map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={`tab-btn ${authMode === mode ? "tab-btn--active" : ""}`}
+                onClick={() => onAuthModeChange(mode)}
+              >
+                {mode === "login" ? "Sign in" : "Create account"}
+              </button>
+            ))}
           </div>
-          <form className="response-form" onSubmit={onSubmit}>
-            {authMode === "register" ? (
-              <label>
-                Name
-                <input type="text" value={authForm.name} onChange={(event) => updateForm(onAuthFormChange, "name", event.target.value)} />
-              </label>
-            ) : null}
-            <label>
-              Email
-              <input type="email" value={authForm.email} onChange={(event) => updateForm(onAuthFormChange, "email", event.target.value)} />
-            </label>
-            <label>
-              Password
-              <input type="password" value={authForm.password} onChange={(event) => updateForm(onAuthFormChange, "password", event.target.value)} />
-            </label>
-            {error ? <p className="error-banner">{error}</p> : null}
-            <button type="submit" disabled={busy}>{busy ? "Working..." : authMode === "login" ? "Enter IlGo" : "Launch IlGo account"}</button>
+
+          <form className="auth-form" onSubmit={onSubmit}>
+            {authMode === "register" && (
+              <div className="field">
+                <label htmlFor="auth-name">Full name</label>
+                <input
+                  id="auth-name"
+                  type="text"
+                  placeholder="Ravi Kumar"
+                  value={authForm.name}
+                  onChange={(e) => updateForm(onAuthFormChange, "name", e.target.value)}
+                />
+              </div>
+            )}
+            <div className="field">
+              <label htmlFor="auth-email">Email</label>
+              <input
+                id="auth-email"
+                type="email"
+                placeholder="you@example.com"
+                value={authForm.email}
+                onChange={(e) => updateForm(onAuthFormChange, "email", e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="auth-pass">Password</label>
+              <input
+                id="auth-pass"
+                type="password"
+                placeholder="••••••••"
+                value={authForm.password}
+                onChange={(e) => updateForm(onAuthFormChange, "password", e.target.value)}
+              />
+            </div>
+            {error && <p className="form-error">{error}</p>}
+            <button type="submit" className="primary-btn" disabled={busy}>
+              {busy ? "Working…" : authMode === "login" ? "Sign in" : "Create account"}
+            </button>
           </form>
         </div>
       </section>
 
+      {/* Feature grid */}
       <section className="feature-grid">
-        <div className="panel info-panel"><h3>Customer app flow</h3><p>Choose a service, see nearby workers ranked by distance, rating, and price, then confirm a job.</p></div>
-        <div className="panel info-panel"><h3>Worker app flow</h3><p>Toggle availability, accept jobs, move toward the customer, arrive, and complete the service.</p></div>
-        <div className="panel info-panel"><h3>Maps-ready tracking</h3><p>The current tracker is provider-agnostic and ready to swap to Google Maps when an API key is added.</p></div>
+        {[
+          { icon: "🗂️", title: "Customer journey", desc: "Discover services, see ranked workers, confirm a job, and track every step in real time." },
+          { icon: "🧰", title: "Worker console", desc: "Toggle availability, accept jobs, simulate navigation, and mark jobs complete." },
+          { icon: "🗺️", title: "Maps-ready", desc: "Provider-agnostic tracker — swap in Google Maps with a single API key." },
+        ].map(({ icon, title, desc }) => (
+          <div key={title} className="card feature-card">
+            <div className="feature-icon">{icon}</div>
+            <h3>{title}</h3>
+            <p>{desc}</p>
+          </div>
+        ))}
       </section>
-    </>
+    </div>
   );
 }
 
-function CustomerDashboard({
-  activeBooking,
-  bookingForm,
-  bookings,
-  busy,
-  services,
-  workerPreview,
-  onBookingFormChange,
-  onCreateBooking,
-  onPayBooking,
-  onSelectBooking,
-}) {
-  return (
-    <>
-      <section className="panel controls">
-        <div className="panel-header">
-          <h2>Book a Service</h2>
-          <p>Pick the service, confirm your coordinates, and IlGo will dispatch the best match.</p>
-        </div>
+/* ───────────────────────────── CustomerDashboard ───────────────────────── */
 
-        <form className="form-grid" onSubmit={onCreateBooking}>
-          <label>
-            Service
-            <select value={bookingForm.serviceSlug} onChange={(event) => updateForm(onBookingFormChange, "serviceSlug", event.target.value)}>
-              {services.map((service) => (
-                <option key={service.slug} value={service.slug}>
-                  {service.name} from Rs. {service.basePrice}
+function CustomerDashboard({ activeBooking, bookingForm, bookings, busy, services, workerPreview, onBookingFormChange, onCreateBooking, onPayBooking, onSelectBooking }) {
+  return (
+    <div className="customer-layout">
+      {/* Booking form */}
+      <section className="card">
+        <div className="card-header">
+          <h2>Book a service</h2>
+          <p>Pick what you need and IlGo dispatches the best match nearby.</p>
+        </div>
+        <form className="booking-form" onSubmit={onCreateBooking}>
+          <div className="field">
+            <label>Service</label>
+            <select value={bookingForm.serviceSlug} onChange={(e) => updateForm(onBookingFormChange, "serviceSlug", e.target.value)}>
+              {services.map((s) => (
+                <option key={s.slug} value={s.slug}>
+                  {s.name} — from ₹{s.basePrice}
                 </option>
               ))}
             </select>
-          </label>
-          <label>
-            Latitude
-            <input type="number" step="0.0001" value={bookingForm.latitude} onChange={(event) => updateForm(onBookingFormChange, "latitude", event.target.value)} />
-          </label>
-          <label>
-            Longitude
-            <input type="number" step="0.0001" value={bookingForm.longitude} onChange={(event) => updateForm(onBookingFormChange, "longitude", event.target.value)} />
-          </label>
-          <label className="full-width">
-            Job note
-            <input type="text" value={bookingForm.note} placeholder="Leaking sink, fan not spinning, deep clean before move-in..." onChange={(event) => updateForm(onBookingFormChange, "note", event.target.value)} />
-          </label>
-          <button type="submit" disabled={busy}>{busy ? "Dispatching..." : "Confirm IlGo booking"}</button>
+          </div>
+          <div className="coord-row">
+            <div className="field">
+              <label>Latitude</label>
+              <input type="number" step="0.0001" value={bookingForm.latitude} onChange={(e) => updateForm(onBookingFormChange, "latitude", e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Longitude</label>
+              <input type="number" step="0.0001" value={bookingForm.longitude} onChange={(e) => updateForm(onBookingFormChange, "longitude", e.target.value)} />
+            </div>
+          </div>
+          <div className="field">
+            <label>Job note</label>
+            <input type="text" placeholder="Leaking sink, fan not working, deep clean…" value={bookingForm.note} onChange={(e) => updateForm(onBookingFormChange, "note", e.target.value)} />
+          </div>
+          <button type="submit" className="primary-btn" disabled={busy}>
+            {busy ? "Dispatching…" : "Confirm booking"}
+          </button>
         </form>
       </section>
 
-      <section className="workspace">
-        <article className="panel">
-          <div className="panel-header">
-            <h2>Nearby Workers</h2>
-            <p>Ranked with a weighted score across distance, rating, and price.</p>
+      {/* Two-col: workers + tracker */}
+      <div className="side-by-side">
+        {/* Nearby workers */}
+        <div className="card">
+          <div className="card-header">
+            <h2>Nearby workers</h2>
+            <p>Ranked by distance, rating &amp; price.</p>
           </div>
           <div className="list-stack">
-            {workerPreview.map((worker) => (
-              <div key={worker.id} className="history-card">
-                <div className="history-header">
-                  <div>
-                    <p className="eyebrow small">{worker.skillSlug}</p>
-                    <h3>{worker.name}</h3>
-                  </div>
-                  <div className="score-pill">{worker.rating.toFixed(1)} star</div>
+            {workerPreview.length === 0 && <EmptyState text="No workers found for this location and service." />}
+            {workerPreview.map((w) => (
+              <div key={w.id} className="worker-row">
+                <div className="worker-avatar">{w.name[0]}</div>
+                <div className="worker-info">
+                  <strong>{w.name}</strong>
+                  <span className="worker-meta">{w.skillSlug} · {w.distanceKm ?? "--"} km · ₹{w.hourlyRate}/hr</span>
                 </div>
-                <p className="history-meta">
-                  {worker.distanceKm ?? "--"} km away | Rs. {worker.hourlyRate}/hr | score {worker.matchScore ?? "--"}
-                </p>
-                <p className="history-summary">{worker.isAvailable ? "Available now" : "Currently busy"}. Completed jobs: {worker.completedJobs}.</p>
+                <div className="worker-right">
+                  <div className="rating-badge">★ {w.rating.toFixed(1)}</div>
+                  <span className={`avail-dot ${w.isAvailable ? "avail-dot--on" : "avail-dot--off"}`} />
+                </div>
               </div>
             ))}
           </div>
-        </article>
+        </div>
 
-        <article className="panel">
-          <div className="panel-header">
-            <h2>Tracking Screen</h2>
-            <p>Live worker location, ETA, payment status, and a maps-ready visual board.</p>
+        {/* Tracker */}
+        <div className="card">
+          <div className="card-header">
+            <h2>Live tracker</h2>
+            <p>Worker location, ETA, and payment status.</p>
           </div>
-
           {activeBooking ? (
             <TrackingPanel booking={activeBooking} busy={busy} onPay={onPayBooking} />
           ) : (
-            <EmptyState text="Create a booking to open the tracking screen." />
+            <EmptyState text="Create a booking to start live tracking." />
           )}
-        </article>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Recent Bookings</h2>
-          <p>Tap any job to focus the live tracker.</p>
         </div>
-        {bookings.length ? (
+      </div>
+
+      {/* Booking history */}
+      <div className="card">
+        <div className="card-header">
+          <h2>Recent bookings</h2>
+          <p>Tap a job to focus the tracker.</p>
+        </div>
+        {bookings.length === 0 ? (
+          <EmptyState text="Your booking history will appear here." />
+        ) : (
           <div className="list-stack">
-            {bookings.map((booking) => (
-              <button key={booking.id} type="button" className="history-card selectable-card" onClick={() => onSelectBooking(booking)}>
-                <div className="history-header">
-                  <div>
-                    <p className="eyebrow small">{booking.serviceName}</p>
-                    <h3>{booking.worker.name}</h3>
-                  </div>
-                  <div className={`status-pill ${booking.status}`}>{booking.status}</div>
+            {bookings.map((b) => (
+              <button key={b.id} type="button" className="booking-card" onClick={() => onSelectBooking(b)}>
+                <div className="booking-card__left">
+                  <span className="booking-service">{b.serviceName}</span>
+                  <strong>{b.worker.name}</strong>
+                  <span className="booking-note">{b.note || b.serviceDescription}</span>
                 </div>
-                <p className="history-meta">ETA {booking.etaMinutes} min | Rs. {booking.priceEstimate}</p>
-                <p className="history-summary">{booking.note || booking.serviceDescription}</p>
+                <div className="booking-card__right">
+                  <span className={`status-badge status--${b.status}`}>{b.status}</span>
+                  <span className="booking-price">₹{b.priceEstimate}</span>
+                  <span className="booking-eta">ETA {b.etaMinutes} min</span>
+                </div>
               </button>
             ))}
           </div>
-        ) : (
-          <EmptyState text="Your booking history will appear here after the first request." />
-        )}
-      </section>
-    </>
-  );
-}
-
-function TrackingPanel({ booking, busy, onPay }) {
-  const progress = journeyProgress(booking);
-
-  return (
-    <div className="tracking-stack">
-      <div className="brief-meta">
-        <MetaCard label="Worker" value={booking.worker.name} />
-        <MetaCard label="Status" value={booking.status} />
-        <MetaCard label="ETA" value={`${booking.etaMinutes} min`} />
-        <MetaCard label="Estimate" value={`Rs. ${booking.priceEstimate}`} />
-      </div>
-
-      <div className="map-board">
-        <div className="route-line" style={{ width: `${Math.max(progress, 8)}%` }} />
-        <div className="map-pin customer" style={{ left: "84%" }}>
-          <span>Customer</span>
-        </div>
-        <div className="map-pin worker" style={{ left: `${Math.min(progress, 84)}%` }}>
-          <span>{booking.worker.name}</span>
-        </div>
-      </div>
-
-      <div className="tracking-copy">
-        <p>
-          {booking.worker.name} is handling your {booking.serviceName.toLowerCase()} request.
-          Coordinates: {booking.workerLatitude.toFixed(4)}, {booking.workerLongitude.toFixed(4)}.
-        </p>
-        <p>
-          Google Maps handoff: replace this board with a JS Maps component and feed these same live coordinates into the route markers.
-        </p>
-      </div>
-
-      <div className="voice-controls">
-        <div className={`status-pill ${booking.status}`}>{booking.status}</div>
-        {!booking.payment ? (
-          <button type="button" disabled={busy || !["arrived", "completed"].includes(booking.status)} onClick={onPay}>
-            {busy ? "Processing..." : `Pay Rs. ${booking.priceEstimate} + tip`}
-          </button>
-        ) : (
-          <div className="payment-note">Paid Rs. {booking.payment.amount} + Rs. {booking.payment.tip} tip</div>
         )}
       </div>
     </div>
   );
 }
 
+/* ──────────────────────────── TrackingPanel ──────────────────────────── */
+
+function TrackingPanel({ booking, busy, onPay }) {
+  const progress = journeyProgress(booking);
+  return (
+    <div className="tracking">
+      {/* Meta row */}
+      <div className="tracking-meta">
+        {[
+          { label: "Worker", val: booking.worker.name },
+          { label: "ETA", val: `${booking.etaMinutes} min` },
+          { label: "Estimate", val: `₹${booking.priceEstimate}` },
+        ].map(({ label, val }) => (
+          <div key={label} className="tracking-chip">
+            <span>{label}</span>
+            <strong>{val}</strong>
+          </div>
+        ))}
+        <span className={`status-badge status--${booking.status}`}>{booking.status}</span>
+      </div>
+
+      {/* Map board */}
+      <div className="map-board">
+        <div className="map-track">
+          <div className="map-progress" style={{ width: `${Math.max(progress, 6)}%` }} />
+        </div>
+        <div className="map-pin map-pin--worker" style={{ left: `${Math.min(progress, 82)}%` }}>
+          <div className="pin-dot" />
+          <span>{booking.worker.name}</span>
+        </div>
+        <div className="map-pin map-pin--customer" style={{ left: "86%" }}>
+          <div className="pin-dot" />
+          <span>You</span>
+        </div>
+        <div className="map-coords">
+          {booking.workerLatitude.toFixed(4)}, {booking.workerLongitude.toFixed(4)}
+        </div>
+      </div>
+
+      {/* Payment */}
+      <div className="tracking-footer">
+        {!booking.payment ? (
+          <button
+            type="button"
+            className="primary-btn"
+            disabled={busy || !["arrived", "completed"].includes(booking.status)}
+            onClick={onPay}
+          >
+            {busy ? "Processing…" : `Pay ₹${booking.priceEstimate} + tip`}
+          </button>
+        ) : (
+          <div className="paid-note">
+            ✓ Paid ₹{booking.payment.amount} + ₹{booking.payment.tip} tip
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ──────────────────────────── WorkerHub ──────────────────────────── */
+
 function WorkerHub({ busy, jobs, selectedWorker, workers, onMoveWorker, onSelectWorker, onToggleAvailability, onUpdateStatus }) {
   return (
-    <section className="panel">
-      <div className="panel-header">
-        <h2>Worker App Console</h2>
-        <p>Simulate the worker experience: availability, incoming jobs, navigation, and completion.</p>
+    <div className="card">
+      <div className="card-header">
+        <h2>Worker console</h2>
+        <p>Simulate the worker experience: availability, dispatch, navigation, completion.</p>
       </div>
 
       <div className="worker-toolbar">
-        <label>
-          Active worker
-          <select value={selectedWorker?.id || ""} onChange={(event) => onSelectWorker(event.target.value)}>
-            {workers.map((worker) => (
-              <option key={worker.id} value={worker.id}>
-                {worker.name} | {worker.skillSlug}
-              </option>
+        <div className="field" style={{ flex: 1 }}>
+          <label>Active worker</label>
+          <select value={selectedWorker?.id || ""} onChange={(e) => onSelectWorker(e.target.value)}>
+            {workers.map((w) => (
+              <option key={w.id} value={w.id}>{w.name} — {w.skillSlug}</option>
             ))}
           </select>
-        </label>
+        </div>
 
-        {selectedWorker ? (
-          <div className="worker-actions">
-            <MetaCard label="Rating" value={selectedWorker.rating.toFixed(1)} />
-            <MetaCard label="Availability" value={selectedWorker.isAvailable ? "Online" : "Offline"} />
-            <button type="button" className="secondary-button" disabled={busy} onClick={() => onToggleAvailability(!selectedWorker.isAvailable)}>
+        {selectedWorker && (
+          <div className="worker-status-row">
+            <div className="tracking-chip">
+              <span>Rating</span>
+              <strong>★ {selectedWorker.rating.toFixed(1)}</strong>
+            </div>
+            <div className="tracking-chip">
+              <span>Status</span>
+              <strong>{selectedWorker.isAvailable ? "Online" : "Offline"}</strong>
+            </div>
+            <button
+              type="button"
+              className={`pill-btn ${selectedWorker.isAvailable ? "pill-btn--danger" : "pill-btn--active"}`}
+              disabled={busy}
+              onClick={() => onToggleAvailability(!selectedWorker.isAvailable)}
+            >
               {selectedWorker.isAvailable ? "Go offline" : "Go online"}
             </button>
           </div>
-        ) : null}
+        )}
       </div>
 
-      {jobs.length ? (
-        <div className="list-stack">
-          {jobs.map((job) => (
-            <article key={job.id} className="history-card">
-              <div className="history-header">
+      <div className="list-stack" style={{ marginTop: 20 }}>
+        {jobs.length === 0 ? (
+          <EmptyState text="No jobs yet. Create a booking from the customer screen to test dispatch." />
+        ) : (
+          jobs.map((job) => (
+            <div key={job.id} className="job-card">
+              <div className="job-card__header">
                 <div>
-                  <p className="eyebrow small">{job.serviceName}</p>
-                  <h3>{job.note || "Customer request"}</h3>
+                  <span className="booking-service">{job.serviceName}</span>
+                  <strong>{job.note || "Customer request"}</strong>
+                  <span className="worker-meta">Customer at {job.customerLatitude.toFixed(4)}, {job.customerLongitude.toFixed(4)} · ETA {job.etaMinutes} min</span>
                 </div>
-                <div className={`status-pill ${job.status}`}>{job.status}</div>
+                <span className={`status-badge status--${job.status}`}>{job.status}</span>
               </div>
-              <p className="history-meta">
-                Customer at {job.customerLatitude.toFixed(4)}, {job.customerLongitude.toFixed(4)} | ETA {job.etaMinutes} min
-              </p>
-              <div className="worker-job-actions">
-                <button type="button" disabled={busy || job.status !== "requested"} onClick={() => onUpdateStatus(job, "accepted")}>Accept</button>
-                <button type="button" className="secondary-button" disabled={busy || !["accepted", "enroute"].includes(job.status)} onClick={() => onMoveWorker(job)}>Move closer</button>
-                <button type="button" className="secondary-button" disabled={busy || !["accepted", "enroute"].includes(job.status)} onClick={() => onUpdateStatus(job, "arrived")}>Arrived</button>
-                <button type="button" disabled={busy || job.status !== "arrived"} onClick={() => onUpdateStatus(job, "completed")}>Complete</button>
+              <div className="job-actions">
+                <button type="button" className="action-btn" disabled={busy || job.status !== "requested"} onClick={() => onUpdateStatus(job, "accepted")}>Accept</button>
+                <button type="button" className="action-btn action-btn--secondary" disabled={busy || !["accepted", "enroute"].includes(job.status)} onClick={() => onMoveWorker(job)}>Move closer</button>
+                <button type="button" className="action-btn action-btn--secondary" disabled={busy || !["accepted", "enroute"].includes(job.status)} onClick={() => onUpdateStatus(job, "arrived")}>Arrived</button>
+                <button type="button" className="action-btn" disabled={busy || job.status !== "arrived"} onClick={() => onUpdateStatus(job, "completed")}>Complete</button>
               </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <EmptyState text="No jobs yet for this worker. Create a booking from the customer screen to test dispatch." />
-      )}
-    </section>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
+
+/* ──────────────────────────── DeployGuide ──────────────────────────── */
 
 function DeployGuide() {
+  const steps = [
+    { n: "01", title: "Runtime", body: "Node 20+, Postgres, and a host that supports long-lived HTTP connections for the SSE tracking stream." },
+    { n: "02", title: "Environment", body: "Set DATABASE_URL and AUTH_SECRET. Add OPENAI_API_KEY later only if you want AI-powered pricing or support." },
+    { n: "03", title: "Start command", body: "npm install → npm run build → npm start. The server already serves the built Vite bundle." },
+    { n: "04", title: "Health & routes", body: "Use /api/health for checks. Keep /api/ilgo/track/:id open; disable proxy buffering if needed." },
+    { n: "05", title: "Railway / Render", body: "Railway is fastest for Postgres-backed deploys. Render works well with separate web and database services." },
+    { n: "06", title: "Google Maps", body: "Add VITE_GOOGLE_MAPS_API_KEY, swap the tracker board for a Maps component, and feed live coordinates into markers." },
+  ];
   return (
-    <section className="panel">
-      <div className="panel-header">
-        <h2>Deploy IlGo Step by Step</h2>
-        <p>These are the exact pieces to push this MVP from local build to hosted environment.</p>
+    <div className="card">
+      <div className="card-header">
+        <h2>Deploy IlGo</h2>
+        <p>Exact steps to go from local build to hosted production environment.</p>
       </div>
-
       <div className="deploy-grid">
-        <div className="info-panel panel">
-          <h3>1. Runtime setup</h3>
-          <p>Use Node 20+, Postgres, and a platform that supports long-lived HTTP connections for the tracking stream.</p>
-        </div>
-        <div className="info-panel panel">
-          <h3>2. Environment</h3>
-          <p>Set `DATABASE_URL` and `AUTH_SECRET`. Add `OPENAI_API_KEY` later only if you want AI-powered support or pricing.</p>
-        </div>
-        <div className="info-panel panel">
-          <h3>3. Start command</h3>
-          <p>`npm install`, `npm run build`, then `npm start`. The server already serves the built Vite bundle.</p>
-        </div>
-        <div className="info-panel panel">
-          <h3>4. Health and routes</h3>
-          <p>Use `/api/health` for checks, keep `/api/ilgo/track/:bookingId` open for tracking, and ensure proxy buffering is disabled if needed.</p>
-        </div>
-        <div className="info-panel panel">
-          <h3>5. Railway or Render</h3>
-          <p>Railway is fastest for Postgres-backed deployment. Render also works well if you need separate web and database services.</p>
-        </div>
-        <div className="info-panel panel">
-          <h3>6. Google Maps upgrade</h3>
-          <p>Add `VITE_GOOGLE_MAPS_API_KEY`, replace the tracker board with a Maps component, and pass live worker/customer coordinates into markers and routes.</p>
-        </div>
+        {steps.map(({ n, title, body }) => (
+          <div key={n} className="deploy-step">
+            <span className="deploy-step__num">{n}</span>
+            <h3>{title}</h3>
+            <p>{body}</p>
+          </div>
+        ))}
       </div>
-    </section>
+    </div>
   );
 }
+
+/* ──────────────────────────── Shared ──────────────────────────── */
 
 function EmptyState({ text }) {
   return <div className="empty-state">{text}</div>;
 }
 
-function MetaCard({ label, value }) {
-  return (
-    <div className="meta-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function MetricCard({ title, score, description }) {
-  return (
-    <div className="metric-card">
-      <span>{title}</span>
-      <strong>{score}</strong>
-      <p>{description}</p>
-    </div>
-  );
-}
+/* ──────────────────────────── Utilities ──────────────────────────── */
 
 async function fetchJson(url, options = {}) {
-  const fullUrl = url.startsWith("http")
-    ? url
-    : `https://ilgo.onrender.com${url}`;
-
+  const fullUrl = url.startsWith("http") ? url : `https://ilgo.onrender.com${url}`;
   const response = await fetch(fullUrl, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
-
   const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(data.error || data.detail || "Request failed");
-  }
-
+  if (!response.ok) throw new Error(data.error || data.detail || "Request failed");
   return data;
 }
 
@@ -751,34 +746,25 @@ function authHeaders(token) {
 }
 
 function updateForm(setter, key, value) {
-  setter((current) => ({
-    ...current,
-    [key]: value,
-  }));
+  setter((current) => ({ ...current, [key]: value }));
 }
 
 function mergeBooking(items, booking) {
-  const nextItems = [booking, ...items.filter((item) => item.id !== booking.id)];
-  return nextItems.sort((left, right) => new Date(right.updatedAt) - new Date(left.updatedAt));
+  return [booking, ...items.filter((item) => item.id !== booking.id)].sort(
+    (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)
+  );
 }
 
-function moveToward(startLatitude, startLongitude, targetLatitude, targetLongitude, ratio) {
+function moveToward(startLat, startLng, targetLat, targetLng, ratio) {
   return {
-    latitude: Number((startLatitude + (targetLatitude - startLatitude) * ratio).toFixed(6)),
-    longitude: Number((startLongitude + (targetLongitude - startLongitude) * ratio).toFixed(6)),
+    latitude: Number((startLat + (targetLat - startLat) * ratio).toFixed(6)),
+    longitude: Number((startLng + (targetLng - startLng) * ratio).toFixed(6)),
   };
 }
 
 function journeyProgress(booking) {
-  const distanceGap = Math.abs(booking.customerLongitude - booking.workerLongitude) + Math.abs(booking.customerLatitude - booking.workerLatitude);
-
-  if (booking.status === "arrived" || booking.status === "completed" || booking.status === "paid") {
-    return 84;
-  }
-
-  if (distanceGap === 0) {
-    return 84;
-  }
-
-  return Math.max(12, Math.min(76, Math.round(84 - distanceGap * 5000)));
+  if (["arrived", "completed", "paid"].includes(booking.status)) return 84;
+  const gap = Math.abs(booking.customerLongitude - booking.workerLongitude) + Math.abs(booking.customerLatitude - booking.workerLatitude);
+  if (gap === 0) return 84;
+  return Math.max(12, Math.min(76, Math.round(84 - gap * 5000)));
 }
