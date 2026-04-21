@@ -1,3 +1,4 @@
+const API_BASE_URL = "https://ilgo.onrender.com";
 import { useEffect, useState } from "react";
 
 const initialAuth = {
@@ -723,7 +724,11 @@ function MetricCard({ title, score, description }) {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, {
+  const fullUrl = url.startsWith("http")
+    ? url
+    : `https://ilgo.onrender.com${url}`;
+
+  const response = await fetch(fullUrl, {
     headers: {
       "Content-Type": "application/json",
       ...(options.headers || {}),
