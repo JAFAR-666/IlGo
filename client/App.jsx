@@ -1,3 +1,4 @@
+import React from "react";
 const API_BASE_URL = "https://ilgo.onrender.com";
 import { useEffect, useState } from "react";
 
