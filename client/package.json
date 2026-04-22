@@ -14,8 +14,8 @@
         "react-dom": "^19.1.1",
         "recharts": "^3.2.1"
     },
-    "devDependencies": {
-        "@vitejs/plugin-react": "^4.2.1",
-        "vite": "^8.0.9"
-    }
+"devDependencies": {
+    "vite": "5.2.0",
+    "@vitejs/plugin-react": "4.2.1"
+}
 }
