@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const { Pool } = require("pg");
 
 let pool;
@@ -63,6 +64,18 @@ async function initDb() {
         revoked_at TIMESTAMPTZ
       );
 
+      CREATE TABLE IF NOT EXISTS auth_otps (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        email TEXT NOT NULL,
+        mobile TEXT NOT NULL,
+        otp_hash TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        consumed_at TIMESTAMPTZ
+      );
+
       CREATE TABLE IF NOT EXISTS practice_sessions (
         id TEXT PRIMARY KEY,
         user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -116,6 +129,7 @@ async function initDb() {
 
       CREATE TABLE IF NOT EXISTS workers (
         id TEXT PRIMARY KEY,
+        user_id TEXT UNIQUE REFERENCES users(id) ON DELETE SET NULL,
         name TEXT NOT NULL,
         skill_slug TEXT NOT NULL REFERENCES services_catalog(slug) ON DELETE CASCADE,
         hourly_rate NUMERIC(10, 2) NOT NULL,
@@ -153,10 +167,42 @@ async function initDb() {
         created_at TIMESTAMPTZ NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS worker_documents (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        worker_id TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
+        doc_type TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        file_data TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        uploaded_at TIMESTAMPTZ NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_auth_otps_user_id ON auth_otps(user_id);
+      CREATE INDEX IF NOT EXISTS idx_auth_otps_mobile ON auth_otps(mobile);
       CREATE INDEX IF NOT EXISTS idx_workers_skill_slug ON workers(skill_slug);
+      CREATE INDEX IF NOT EXISTS idx_workers_user_id ON workers(user_id);
       CREATE INDEX IF NOT EXISTS idx_bookings_customer_id ON bookings(customer_id);
       CREATE INDEX IF NOT EXISTS idx_bookings_worker_id ON bookings(worker_id);
       CREATE INDEX IF NOT EXISTS idx_payments_booking_id ON payments(booking_id);
+      CREATE INDEX IF NOT EXISTS idx_worker_documents_user_id ON worker_documents(user_id);
+      CREATE INDEX IF NOT EXISTS idx_worker_documents_worker_id ON worker_documents(worker_id);
+    `);
+
+    await client.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'customer';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_status TEXT NOT NULL DEFAULT 'verified';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS worker_profile_id TEXT;
+      ALTER TABLE workers ADD COLUMN IF NOT EXISTS user_id TEXT UNIQUE;
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+      CREATE INDEX IF NOT EXISTS idx_users_verification_status ON users(verification_status);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_mobile_role
+      ON users(email, COALESCE(mobile, ''), role);
     `);
 
     await client.query(`
@@ -189,9 +235,45 @@ async function initDb() {
           is_available = EXCLUDED.is_available,
           completed_jobs = EXCLUDED.completed_jobs
     `);
+
+    const adminEmail = normalizeEmail(process.env.ADMIN_EMAIL || "admin@ilgo.app");
+    const adminPassword = process.env.ADMIN_PASSWORD || "Admin@123";
+    const adminName = process.env.ADMIN_NAME || "IlGo Admin";
+    const adminMobile = process.env.ADMIN_MOBILE || "9999999999";
+
+    await client.query(`
+      INSERT INTO users (
+        id, name, email, mobile, role, verification_status, password_hash, created_at
+      ) VALUES (
+        $1, $2, $3, $4, 'admin', 'verified', $5, $6
+      )
+      ON CONFLICT (email) DO UPDATE
+      SET name = EXCLUDED.name,
+          mobile = EXCLUDED.mobile,
+          role = 'admin',
+          verification_status = 'verified',
+          password_hash = EXCLUDED.password_hash
+    `, [
+      "user_admin",
+      adminName,
+      adminEmail,
+      adminMobile,
+      hashPassword(adminPassword),
+      new Date().toISOString(),
+    ]);
   } finally {
     client.release();
   }
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const derived = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${derived}`;
+}
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
 }
 
 function shouldUseSSL(connectionString) {

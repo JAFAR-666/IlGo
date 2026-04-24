@@ -5,20 +5,23 @@ const crypto = require("crypto");
 const { createSession, evaluateTurnHeuristic } = require("./src/coach");
 const { initDb } = require("./src/db");
 const { evaluateTurnWithOpenAI, DEFAULT_MODEL } = require("./src/openaiCoach");
-const { registerUser, loginUser, createToken, getUserFromToken } = require("./src/auth");
+const { registerUser, loginUser, requestOtp, verifyOtpAndLogin, createToken, getUserFromToken } = require("./src/auth");
 const { createStoredSession, getAnalyticsForUser, getHistoryForUser, savePracticeResult } = require("./src/dataStore");
 const { connectRealtimeVoice, REALTIME_MODEL } = require("./src/realtime");
 const {
   createBooking,
   createPayment,
+  getAdminDashboardStats,
   getBookingById,
   getBootstrapData,
   listBookingsForUser,
+  listPendingWorkers,
   listWorkerJobs,
   listWorkers,
   updateBookingStatus,
   updateWorkerAvailability,
   updateWorkerLocation,
+  verifyWorker,
 } = require("./src/ilgoStore");
 
 const PORT = process.env.PORT || 3000;
@@ -83,6 +86,16 @@ async function getAuthenticatedUser(req) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
   return getUserFromToken(token);
+}
+
+function requireRole(user, allowedRoles) {
+  if (!user) {
+    throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
+  }
+
+  if (!allowedRoles.includes(user.role)) {
+    throw Object.assign(new Error("Forbidden"), { statusCode: 403 });
+  }
 }
 
 async function scoreTranscript(session, responseText, source = "realtime") {
@@ -212,6 +225,8 @@ const server = http.createServer(async (req, res) => {
         brand: "IlGo",
         productTagline: "Instant home services with live worker tracking",
         deploymentTarget: "Railway or Render",
+        adminEmail: process.env.ADMIN_EMAIL || "admin@ilgo.app",
+        otpMode: "demo",
       });
       return;
     }
@@ -269,7 +284,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && pathname === "/api/auth/register") {
       const payload = await readBody(req);
       const user = await registerUser(payload);
-      const token = await createToken(user);
+      const token = user.role === "worker" ? "" : await createToken(user);
       sendJson(res, 200, { user, token });
       return;
     }
@@ -282,6 +297,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && pathname === "/api/auth/request-otp") {
+      const payload = await readBody(req);
+      sendJson(res, 200, await requestOtp(payload));
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/verify-otp") {
+      const payload = await readBody(req);
+      sendJson(res, 200, await verifyOtpAndLogin(payload));
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/auth/me") {
       const user = await getAuthenticatedUser(req);
 
@@ -291,6 +318,27 @@ const server = http.createServer(async (req, res) => {
       }
 
       sendJson(res, 200, { user });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/admin/workers/pending") {
+      const user = await getAuthenticatedUser(req);
+      requireRole(user, ["admin"]);
+      sendJson(res, 200, { items: await listPendingWorkers() });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/admin/dashboard") {
+      const user = await getAuthenticatedUser(req);
+      requireRole(user, ["admin"]);
+      sendJson(res, 200, { stats: await getAdminDashboardStats() });
+      return;
+    }
+
+    if (req.method === "POST" && parts[0] === "api" && parts[1] === "admin" && parts[2] === "workers" && parts[4] === "verify") {
+      const user = await getAuthenticatedUser(req);
+      requireRole(user, ["admin"]);
+      sendJson(res, 200, { worker: await verifyWorker(parts[3]) });
       return;
     }
 
@@ -322,11 +370,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && pathname === "/api/ilgo/bookings") {
       const user = await getAuthenticatedUser(req);
-
-      if (!user) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
+      requireRole(user, ["customer", "admin"]);
 
       sendJson(res, 200, {
         items: await listBookingsForUser(user.id),
@@ -348,11 +392,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/api/ilgo/bookings") {
       const user = await getAuthenticatedUser(req);
-
-      if (!user) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
+      requireRole(user, ["customer"]);
 
       const payload = await readBody(req);
       const booking = await createBooking({
@@ -369,14 +409,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && parts[0] === "api" && parts[1] === "ilgo" && parts[2] === "bookings" && parts[4] === "status") {
+      const user = await getAuthenticatedUser(req);
+      requireRole(user, ["worker", "admin"]);
       const payload = await readBody(req);
-      const booking = await updateBookingStatus(parts[3], payload.workerId, payload.status);
+      const booking = await updateBookingStatus(parts[3], user.role === "admin" ? payload.workerId : user.workerProfileId, payload.status);
       broadcastTracking(parts[3], { type: "status", booking });
       sendJson(res, 200, { booking });
       return;
     }
 
     if (req.method === "POST" && parts[0] === "api" && parts[1] === "ilgo" && parts[2] === "bookings" && parts[4] === "pay") {
+      const user = await getAuthenticatedUser(req);
+      requireRole(user, ["customer", "admin"]);
       const payload = await readBody(req);
       const booking = await createPayment({
         bookingId: parts[3],
@@ -404,6 +448,39 @@ const server = http.createServer(async (req, res) => {
       res.write(`data: ${JSON.stringify({ type: "snapshot", booking })}\n\n`);
       addTrackingStream(parts[3], res);
       req.on("close", () => removeTrackingStream(parts[3], res));
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/worker/jobs") {
+      const user = await getAuthenticatedUser(req);
+      requireRole(user, ["worker"]);
+      sendJson(res, 200, { items: await listWorkerJobs(user.workerProfileId) });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/worker/availability") {
+      const user = await getAuthenticatedUser(req);
+      requireRole(user, ["worker"]);
+      const payload = await readBody(req);
+      sendJson(res, 200, {
+        worker: await updateWorkerAvailability(user.workerProfileId, payload.isAvailable),
+      });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/worker/location") {
+      const user = await getAuthenticatedUser(req);
+      requireRole(user, ["worker"]);
+      const payload = await readBody(req);
+      const booking = await updateWorkerLocation(user.workerProfileId, {
+        latitude: Number(payload.latitude),
+        longitude: Number(payload.longitude),
+        bookingId: payload.bookingId,
+      });
+      if (booking) {
+        broadcastTracking(booking.id, { type: "location", booking });
+      }
+      sendJson(res, 200, { booking });
       return;
     }
 
@@ -493,8 +570,8 @@ const server = http.createServer(async (req, res) => {
 
     sendJson(res, 404, { error: "Unknown route" });
   } catch (error) {
-    sendJson(res, 500, {
-      error: "Server error",
+    sendJson(res, error.statusCode || 500, {
+      error: error.statusCode ? error.message : "Server error",
       detail: error.message,
     });
   }

@@ -5,9 +5,12 @@ async function getBootstrapData() {
   const [servicesResult, workersResult] = await Promise.all([
     query("SELECT id, slug, name, description, base_price FROM services_catalog ORDER BY base_price ASC"),
     query(`
-      SELECT id, name, skill_slug, hourly_rate, rating, latitude, longitude, is_available, completed_jobs
-      FROM workers
-      ORDER BY rating DESC, completed_jobs DESC, name ASC
+      SELECT w.id, w.user_id, w.name, w.skill_slug, w.hourly_rate, w.rating, w.latitude, w.longitude, w.is_available, w.completed_jobs,
+             u.mobile, u.verification_status
+      FROM workers w
+      LEFT JOIN users u ON u.id = w.user_id
+      WHERE COALESCE(u.verification_status, 'verified') = 'verified'
+      ORDER BY w.rating DESC, w.completed_jobs DESC, w.name ASC
     `),
   ]);
 
@@ -19,10 +22,13 @@ async function getBootstrapData() {
 
 async function listWorkers({ serviceSlug, latitude, longitude }) {
   const result = await query(`
-    SELECT id, name, skill_slug, hourly_rate, rating, latitude, longitude, is_available, completed_jobs
-    FROM workers
-    WHERE ($1::text IS NULL OR skill_slug = $1)
-    ORDER BY is_available DESC, rating DESC, completed_jobs DESC, name ASC
+    SELECT w.id, w.user_id, w.name, w.skill_slug, w.hourly_rate, w.rating, w.latitude, w.longitude, w.is_available, w.completed_jobs,
+           u.mobile, u.verification_status
+    FROM workers w
+    LEFT JOIN users u ON u.id = w.user_id
+    WHERE ($1::text IS NULL OR w.skill_slug = $1)
+      AND COALESCE(u.verification_status, 'verified') = 'verified'
+    ORDER BY w.is_available DESC, w.rating DESC, w.completed_jobs DESC, w.name ASC
   `, [serviceSlug || null]);
 
   return result.rows.map((worker) => mapWorker(worker, latitude, longitude));
@@ -32,9 +38,13 @@ async function createBooking({ customerId, serviceSlug, latitude, longitude, not
   const [serviceResult, workersResult] = await Promise.all([
     query("SELECT * FROM services_catalog WHERE slug = $1 LIMIT 1", [serviceSlug]),
     query(`
-      SELECT id, name, skill_slug, hourly_rate, rating, latitude, longitude, is_available, completed_jobs
-      FROM workers
-      WHERE skill_slug = $1 AND is_available = TRUE
+      SELECT w.id, w.user_id, w.name, w.skill_slug, w.hourly_rate, w.rating, w.latitude, w.longitude, w.is_available, w.completed_jobs,
+             u.mobile, u.verification_status
+      FROM workers w
+      LEFT JOIN users u ON u.id = w.user_id
+      WHERE w.skill_slug = $1
+        AND w.is_available = TRUE
+        AND COALESCE(u.verification_status, 'verified') = 'verified'
     `, [serviceSlug]),
   ]);
 
@@ -117,6 +127,177 @@ async function listWorkerJobs(workerId) {
   return result.rows.map(mapBookingRow);
 }
 
+async function listPendingWorkers() {
+  const result = await query(`
+    SELECT u.id AS user_id, u.name AS user_name, u.email, u.mobile, u.verification_status, u.created_at,
+           w.id AS worker_id, w.skill_slug, w.hourly_rate, w.latitude, w.longitude, w.is_available
+    FROM users u
+    JOIN workers w ON w.user_id = u.id
+    WHERE u.role = 'worker'
+      AND u.verification_status = 'pending'
+    ORDER BY u.created_at ASC
+  `);
+
+  const items = [];
+
+  for (const row of result.rows) {
+    const documents = await listWorkerDocuments(row.user_id);
+    items.push({
+      userId: row.user_id,
+      workerId: row.worker_id,
+      name: row.user_name,
+      email: row.email,
+      mobile: row.mobile,
+      skillSlug: row.skill_slug,
+      hourlyRate: Number(row.hourly_rate),
+      latitude: Number(row.latitude),
+      longitude: Number(row.longitude),
+      isAvailable: Boolean(row.is_available),
+      verificationStatus: row.verification_status,
+      createdAt: row.created_at,
+      documents,
+    });
+  }
+
+  return items;
+}
+
+async function listWorkerDocuments(userId) {
+  const result = await query(`
+    SELECT id, doc_type, file_name, mime_type, file_data, status, uploaded_at
+    FROM worker_documents
+    WHERE user_id = $1
+    ORDER BY uploaded_at ASC
+  `, [userId]);
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    docType: row.doc_type,
+    fileName: row.file_name,
+    mimeType: row.mime_type,
+    fileData: row.file_data,
+    status: row.status,
+    uploadedAt: row.uploaded_at,
+  }));
+}
+
+async function verifyWorker(userId) {
+  const documents = await listWorkerDocuments(userId);
+
+  if (!documents.length) {
+    throw new Error("Worker cannot be verified without Aadhaar or supporting documents.");
+  }
+
+  await query(`
+    UPDATE users
+    SET verification_status = 'verified'
+    WHERE id = $1 AND role = 'worker'
+  `, [userId]);
+
+  await query(`
+    UPDATE worker_documents
+    SET status = 'approved'
+    WHERE user_id = $1
+  `, [userId]);
+
+  const result = await query(`
+    SELECT u.id AS user_id, u.name AS user_name, u.email, u.mobile, u.verification_status, u.created_at,
+           w.id AS worker_id, w.skill_slug, w.hourly_rate, w.latitude, w.longitude, w.is_available
+    FROM users u
+    JOIN workers w ON w.user_id = u.id
+    WHERE u.id = $1
+    LIMIT 1
+  `, [userId]);
+
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+
+  return {
+    userId: row.user_id,
+    workerId: row.worker_id,
+    name: row.user_name,
+    email: row.email,
+    mobile: row.mobile,
+    skillSlug: row.skill_slug,
+    hourlyRate: Number(row.hourly_rate),
+    latitude: Number(row.latitude),
+    longitude: Number(row.longitude),
+    isAvailable: Boolean(row.is_available),
+    verificationStatus: row.verification_status,
+    createdAt: row.created_at,
+    documents: documents.map((doc) => ({ ...doc, status: "approved" })),
+  };
+}
+
+async function getAdminDashboardStats() {
+  const [userCounts, bookingCounts, paymentTotals, pendingDocumentCount] = await Promise.all([
+    query(`
+      SELECT role, verification_status, COUNT(*)::int AS count
+      FROM users
+      GROUP BY role, verification_status
+    `),
+    query(`
+      SELECT status, COUNT(*)::int AS count
+      FROM bookings
+      GROUP BY status
+    `),
+    query(`
+      SELECT
+        COALESCE(SUM(amount), 0) AS total_amount,
+        COALESCE(SUM(tip), 0) AS total_tip
+      FROM payments
+      WHERE status = 'paid'
+    `),
+    query(`
+      SELECT COUNT(*)::int AS count
+      FROM worker_documents
+      WHERE status = 'pending'
+    `),
+  ]);
+
+  const summary = {
+    customers: 0,
+    verifiedWorkers: 0,
+    pendingWorkers: 0,
+    admins: 0,
+    totalBookings: 0,
+    activeBookings: 0,
+    completedBookings: 0,
+    paidRevenue: Number(paymentTotals.rows[0]?.total_amount || 0),
+    paidTips: Number(paymentTotals.rows[0]?.total_tip || 0),
+    pendingDocuments: Number(pendingDocumentCount.rows[0]?.count || 0),
+  };
+
+  for (const row of userCounts.rows) {
+    if (row.role === "customer") {
+      summary.customers += row.count;
+    }
+    if (row.role === "admin") {
+      summary.admins += row.count;
+    }
+    if (row.role === "worker" && row.verification_status === "verified") {
+      summary.verifiedWorkers += row.count;
+    }
+    if (row.role === "worker" && row.verification_status === "pending") {
+      summary.pendingWorkers += row.count;
+    }
+  }
+
+  for (const row of bookingCounts.rows) {
+    summary.totalBookings += row.count;
+    if (["requested", "accepted", "enroute", "arrived"].includes(row.status)) {
+      summary.activeBookings += row.count;
+    }
+    if (["completed", "paid"].includes(row.status)) {
+      summary.completedBookings += row.count;
+    }
+  }
+
+  return summary;
+}
+
 async function getBookingById(bookingId) {
   const result = await query(`
     SELECT b.*, s.name AS service_name, s.description AS service_description, w.name AS worker_name,
@@ -143,9 +324,11 @@ async function updateWorkerAvailability(workerId, isAvailable) {
   `, [Boolean(isAvailable), workerId]);
 
   const result = await query(`
-    SELECT id, name, skill_slug, hourly_rate, rating, latitude, longitude, is_available, completed_jobs
-    FROM workers
-    WHERE id = $1
+    SELECT w.id, w.user_id, w.name, w.skill_slug, w.hourly_rate, w.rating, w.latitude, w.longitude, w.is_available, w.completed_jobs,
+           u.mobile, u.verification_status
+    FROM workers w
+    LEFT JOIN users u ON u.id = w.user_id
+    WHERE w.id = $1
     LIMIT 1
   `, [workerId]);
 
@@ -240,10 +423,13 @@ function mapWorker(row, latitude, longitude) {
 
   return {
     id: row.id,
+    userId: row.user_id || null,
     name: row.name,
     skillSlug: row.skill_slug,
     hourlyRate,
     rating,
+    mobile: row.mobile || null,
+    verificationStatus: row.verification_status || "verified",
     latitude: workerLatitude,
     longitude: workerLongitude,
     isAvailable: Boolean(row.is_available),
@@ -312,12 +498,16 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 module.exports = {
   createBooking,
   createPayment,
+  getAdminDashboardStats,
   getBookingById,
   getBootstrapData,
   listBookingsForUser,
+  listPendingWorkers,
+  listWorkerDocuments,
   listWorkerJobs,
   listWorkers,
   updateBookingStatus,
   updateWorkerAvailability,
   updateWorkerLocation,
+  verifyWorker,
 };

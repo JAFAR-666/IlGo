@@ -4,6 +4,11 @@ IlGo is a React + Node marketplace MVP for on-demand home services. It now inclu
 
 - Customer booking flow
 - Worker dispatch console
+- Separate admin, customer, and worker authentication
+- Worker verification approval before login access
+- OTP login flow for customers and workers
+- Aadhaar / document upload during worker registration
+- Admin dashboard with stats and verification queue
 - Smart worker matching by distance, rating, and price
 - Live tracking over server-sent events
 - Payment capture records
@@ -48,6 +53,11 @@ Create environment variables:
 ```bash
 DATABASE_URL=postgresql://user:password@host:5432/ilgo
 AUTH_SECRET=replace_with_a_long_random_secret
+ADMIN_EMAIL=admin@ilgo.app
+ADMIN_PASSWORD=Admin@123
+ADMIN_NAME=IlGo Admin
+ADMIN_MOBILE=9999999999
+OTP_TTL_MINUTES=10
 PORT=3000
 ```
 
@@ -89,7 +99,12 @@ Open [http://localhost:5173](http://localhost:5173)
 
 - `POST /api/auth/register`
 - `POST /api/auth/login`
+- `POST /api/auth/request-otp`
+- `POST /api/auth/verify-otp`
 - `GET /api/auth/me`
+- `GET /api/admin/dashboard`
+- `GET /api/admin/workers/pending`
+- `POST /api/admin/workers/:userId/verify`
 
 ### Marketplace
 
@@ -104,9 +119,42 @@ Open [http://localhost:5173](http://localhost:5173)
 
 ### Worker console
 
-- `GET /api/ilgo/workers/:workerId/jobs`
-- `POST /api/ilgo/workers/:workerId/availability`
-- `POST /api/ilgo/workers/:workerId/location`
+- `GET /api/worker/jobs`
+- `POST /api/worker/availability`
+- `POST /api/worker/location`
+
+## Role access rules
+
+- Admin logs in with dedicated email + password credentials from environment variables
+- Customer logs in with email + mobile number through OTP
+- Worker logs in with email + mobile number through OTP
+- Worker registration creates a pending account, worker profile, and uploaded document records
+- Workers cannot log in until an admin verifies them
+
+## OTP behavior
+
+- OTP is currently a demo flow for development
+- The backend generates a 6-digit OTP and returns it in the response
+- This keeps the end-to-end phone verification flow ready while you decide on an SMS provider
+- Later you can replace the returned demo OTP with Twilio, MSG91, or another SMS gateway
+
+## Document upload behavior
+
+- Worker registration accepts Aadhaar or supporting files from the browser
+- Files are currently stored as data URLs in the database for MVP simplicity
+- Before production scale, move document storage to object storage such as S3 or Cloudinary
+
+## Admin dashboard
+
+The admin dashboard now shows:
+
+- customer count
+- verified worker count
+- pending worker count
+- booking totals
+- active job totals
+- paid revenue and tips
+- pending worker document review cards
 
 ## Smart matching
 

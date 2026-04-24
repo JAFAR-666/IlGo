@@ -248,6 +248,26 @@ button:disabled {
   gap: 16px;
 }
 
+.compact-list,
+.document-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.document-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.document-card a {
+  margin-top: 8px;
+  color: var(--brand-deep);
+}
+
+.otp-panel {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
 .history-card,
 .meta-card,
 .metric-card,
@@ -375,6 +395,16 @@ button:disabled {
   background: rgba(157, 43, 43, 0.08);
   border: 1px solid rgba(157, 43, 43, 0.14);
   color: var(--danger);
+}
+
+.notice-banner,
+.inline-note {
+  margin: 0 0 18px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: rgba(31, 138, 112, 0.09);
+  border: 1px solid rgba(31, 138, 112, 0.16);
+  color: var(--accent);
 }
 
 @media (max-width: 920px) {
